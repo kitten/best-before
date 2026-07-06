@@ -15,6 +15,11 @@ export type {
 
 export { createHttpCache } from './httpCache';
 export { CacheResponse } from './cacheStatus';
-export { parseCacheControl } from './cacheControl';
+export {
+  parseCacheControl,
+  makeDefaultCacheControl,
+  cacheControlToRequestHeader,
+  cacheControlToResponseHeader,
+} from './cacheControl';
 export { CacheDecision, computeCacheDecision } from './cacheDecision';
 export { computeStoreDecision } from './storeDecision';
