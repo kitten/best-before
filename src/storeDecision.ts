@@ -107,7 +107,7 @@ export function computeStoreDecision(
       const normalized = name.trim().toLowerCase();
       return (
         normalized === '*' ||
-        CACHE_LOOKUP_IGNORED_HEADERS.some(name => name === normalized)
+        (CACHE_LOOKUP_IGNORED_HEADERS as readonly string[]).includes(normalized)
       );
     })
   ) {

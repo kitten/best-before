@@ -34,12 +34,9 @@ function parseInteger(value: string): number | null {
 }
 
 function parseRangeMember(memberValue: string): ByteRange | null {
-  const member = memberValue.trim();
-  const dash = member.indexOf('-');
-  if (!member || dash < 0 || member.indexOf('-', dash + 1) >= 0) return null;
-
-  const first = member.slice(0, dash).trim();
-  const last = member.slice(dash + 1).trim();
+  const match = /^\s*(\d*)\s*-\s*(\d*)\s*$/.exec(memberValue);
+  if (!match || (!match[1] && !match[2])) return null;
+  const [, first, last] = match;
   if (!first) {
     const length = parseInteger(last);
     return length == null ? null : { type: 'suffix', length };
@@ -118,16 +115,14 @@ export function matchesIfRange(request: Request, response: Response): boolean {
 
 function parseHttpDate(value: string): number | null {
   const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return null;
-  return new Date(timestamp).toUTCString() === value.trim() ? timestamp : null;
+  return !Number.isNaN(timestamp) &&
+    new Date(timestamp).toUTCString() === value.trim()
+    ? timestamp
+    : null;
 }
 
 function representationLength(response: Response): number | null {
-  if (
-    response.status !== 200 ||
-    response.body == null ||
-    response.headers.has('content-range')
-  ) {
+  if (response.body == null || response.headers.has('content-range')) {
     return null;
   }
   const raw = response.headers.get('content-length');
@@ -166,7 +161,7 @@ function sliceBody(
           position += chunk.byteLength;
           if (position <= start) continue;
           const selected = chunk.subarray(from, from + remaining);
-          if (selected.byteLength > 0) {
+          if (selected.byteLength) {
             remaining -= selected.byteLength;
             controller.enqueue(selected);
             if (remaining > 0 && (controller.desiredSize ?? 1) <= 0) return;
@@ -223,12 +218,11 @@ export function selectCachedResponse(
     headers.set('content-range', `bytes */${length}`);
     return new CacheResponse(null, { status: 416, headers }, decision);
   }
-  const selectedLength = resolved.end - resolved.start + 1;
   headers.set(
     'content-range',
     `bytes ${resolved.start}-${resolved.end}/${length}`
   );
-  headers.set('content-length', String(selectedLength));
+  headers.set('content-length', String(resolved.end - resolved.start + 1));
   return new CacheResponse(
     sliceBody(response.body!, resolved.start, resolved.end),
     { status: 206, headers },
