@@ -209,8 +209,8 @@ describe('computeStoreDecision', () => {
     ).toBe(null);
   });
 
-  it('does not cache on private, no-store, or no-cache', () => {
-    for (const directive of ['private', 'no-store', 'no-cache']) {
+  it('does not cache on private or no-store', () => {
+    for (const directive of ['private', 'no-store']) {
       expect(
         _computeStoreDecision(
           new Request(url),
@@ -221,6 +221,68 @@ describe('computeStoreDecision', () => {
         ).output
       ).toBe(null);
     }
+  });
+
+  it('requires a shared directive before storing no-cache by default', () => {
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 'no-cache' },
+        })
+      ).output
+    ).toBe(null);
+
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 'public, no-cache' },
+        })
+      )
+    ).toEqual({
+      input: 'public, no-cache',
+      output: 's-maxage=86400, public, max-age=86400',
+    });
+
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 'no-cache' },
+        }),
+        { requireSharedDirective: false }
+      )
+    ).toEqual({
+      input: 'public, no-cache',
+      output: 's-maxage=86400, public, max-age=86400',
+    });
+
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 'no-cache' },
+        }),
+        { shared: false }
+      )
+    ).toEqual({ input: 'no-cache', output: 'max-age=86400' });
+  });
+
+  it('does not shared-cache bare no-cache for an authorized request', () => {
+    expect(
+      _computeStoreDecision(
+        new Request(url, { headers: { authorization: 'Bearer secret' } }),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 'no-cache' },
+        })
+      ).output
+    ).toBe(null);
   });
 
   it('overrides max-age for immutable output', () => {

@@ -6,6 +6,7 @@ import {
   EXPIRES_HEADER,
   IMMUTABLE_MAX_AGE,
   PUBLIC_CACHE_CONTROL,
+  REVALIDATION_MAX_AGE,
   SET_COOKIE_HEADER,
   VARY_HEADER,
 } from './constants';
@@ -124,11 +125,7 @@ export function computeStoreDecision(
   }
 
   // A shared cache must not store `private`; a private cache may.
-  if (
-    (shared && cacheControl.private) ||
-    cacheControl.noStore ||
-    cacheControl.noCache
-  ) {
+  if ((shared && cacheControl.private) || cacheControl.noStore) {
     return null;
   }
 
@@ -182,8 +179,19 @@ export function computeStoreDecision(
 
     decision.noTransform = cacheControl.noTransform;
 
-    if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
+    if (cacheControl.noCache && !isPublic) {
       return null;
+    }
+
+    if (!isImmutable && !cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
+      return null;
+    }
+
+    // This is only the store-facing retention policy. The original `no-cache` policy is kept in
+    // `input` and consulted on every lookup, while a positive lifetime lets Cache API-backed
+    // stores retain a validator and representation for conditional revalidation.
+    if (cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
+      maxAge = REVALIDATION_MAX_AGE;
     }
 
     decision.public = isImmutable || isPublic;
@@ -227,8 +235,12 @@ export function computeStoreDecision(
 
   decision.noTransform = cacheControl.noTransform;
 
-  if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
+  if (!isImmutable && !cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
     return null;
+  }
+
+  if (cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
+    maxAge = REVALIDATION_MAX_AGE;
   }
 
   decision.maxAge = maxAge + maxStale;

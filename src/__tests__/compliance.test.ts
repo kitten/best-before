@@ -392,8 +392,16 @@ describe('storability rules', () => {
 
   it('does not store no-store responses', () =>
     expectNotStored(cc('no-store')));
-  it('does not store no-cache responses', () =>
-    expectNotStored(cc('no-cache')));
+  it('stores no-cache responses for mandatory validation', async () => {
+    const { cache, store, origin, req } = setup(
+      () => new Response('body', cc('public, no-cache'))
+    );
+    await serve(cache.handle(req(), origin));
+    expect(store.urlCount).toBe(1);
+    expect((await serve(cache.handle(req(), origin))).cacheStatus.hit).toBe(
+      false
+    );
+  });
   it('does not store responses with Set-Cookie', () =>
     expectNotStored({
       headers: { 'cache-control': 's-maxage=3600', 'set-cookie': 'a=1' },

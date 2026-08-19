@@ -253,12 +253,18 @@ export function createHttpCache(
     request: Request,
     cacheResponse: Response | undefined,
     decision: CacheDecision,
+    mustValidate: boolean,
     storable: boolean,
     passthrough: Passthrough,
     ctx: ExecutionCtx | undefined
   ): Promise<CacheResponse> {
     // Send the entry's validators so the origin may answer 304
-    const validateWith = conditionalRevalidation ? cacheResponse : undefined;
+    // Response `no-cache` requires successful validation before reuse, so its validators are
+    // mandatory even when conditional revalidation is otherwise disabled as an optimization.
+    const validateWith =
+      cacheResponse && (conditionalRevalidation || mustValidate)
+        ? cacheResponse
+        : undefined;
     const head = request.method === 'HEAD';
     try {
       const originResponse = await passthrough(
@@ -379,19 +385,33 @@ export function createHttpCache(
 
     let decision: CacheDecision = CacheDecision.BYPASS;
     let cacheResponse: Response | undefined;
+    let mustValidate = false;
 
     if (cacheRequest) {
-      const decide = (response: Response | undefined) =>
-        response
-          ? computeCacheDecision(
-              client,
-              parseCacheControl(response.headers.get(INTERNAL_CACHE_CONTROL)),
-              deriveAge(response.headers),
-              options
-            )
-          : onlyIfCached
-            ? CacheDecision.MISS_TIMEOUT
-            : CacheDecision.MISS;
+      const decide = (
+        response: Response | undefined
+      ): { decision: CacheDecision; mustValidate: boolean } => {
+        if (!response) {
+          return {
+            decision: onlyIfCached
+              ? CacheDecision.MISS_TIMEOUT
+              : CacheDecision.MISS,
+            mustValidate: false,
+          };
+        }
+        const storedPolicy = parseCacheControl(
+          response.headers.get(INTERNAL_CACHE_CONTROL)
+        );
+        return {
+          decision: computeCacheDecision(
+            client,
+            storedPolicy,
+            deriveAge(response.headers),
+            options
+          ),
+          mustValidate: storedPolicy.noCache,
+        };
+      };
       let matchRequest = cacheRequest;
       const ifNoneMatch = request.headers.get('if-none-match');
       const ifModifiedSince = request.headers.get('if-modified-since');
@@ -410,7 +430,7 @@ export function createHttpCache(
         matchRequest = new Request(cacheRequest, { headers });
       }
       cacheResponse = await store.match(matchRequest, { ignoreMethod: true });
-      decision = decide(cacheResponse);
+      ({ decision, mustValidate } = decide(cacheResponse));
 
       // A stale or unverifiable native response cannot replace the complete stored response.
       const nativeResponseMatches =
@@ -424,7 +444,7 @@ export function createHttpCache(
         (decision !== CacheDecision.HIT || !nativeResponseMatches)
       ) {
         cacheResponse = await store.match(cacheRequest, { ignoreMethod: true });
-        decision = decide(cacheResponse);
+        ({ decision, mustValidate } = decide(cacheResponse));
       }
 
       if (decision === CacheDecision.MISS_TIMEOUT) {
@@ -462,6 +482,7 @@ export function createHttpCache(
               request,
               undefined,
               CacheDecision.MISS,
+              false,
               storable,
               passthrough,
               ctx
@@ -497,6 +518,7 @@ export function createHttpCache(
         request,
         cacheResponse,
         decision,
+        mustValidate,
         storable,
         passthrough,
         ctx

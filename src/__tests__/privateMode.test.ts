@@ -142,15 +142,25 @@ describe('private cache mode — computeStoreDecision', () => {
     expect(storeOutput(request, response, false)).toBe(null);
   });
 
-  it('never stores no-store/no-cache in either mode', () => {
+  it('never stores no-store in either mode', () => {
     const request = new Request(url);
-    for (const directive of ['no-store', 'no-cache']) {
-      const response = new Response('body', {
-        headers: { 'cache-control': `max-age=3600, ${directive}` },
-      });
-      expect(storeOutput(request, response, true)).toBe(null);
-      expect(storeOutput(request, response, false)).toBe(null);
-    }
+    const response = new Response('body', {
+      headers: { 'cache-control': 'max-age=3600, no-store' },
+    });
+    expect(storeOutput(request, response, true)).toBe(null);
+    expect(storeOutput(request, response, false)).toBe(null);
+  });
+
+  it('stores no-cache in private mode and eligible shared mode', () => {
+    const request = new Request(url);
+    const response = new Response('body', {
+      headers: { 'cache-control': 'max-age=3600, no-cache' },
+    });
+    expect(storeOutput(request, response, true)).toBe(null);
+    expect(storeOutput(request, response, true, false)).toBe(
+      's-maxage=3600, public, max-age=3600'
+    );
+    expect(storeOutput(request, response, false)).toBe('max-age=3600');
   });
 
   it('keeps must-revalidate on a private entry', () => {

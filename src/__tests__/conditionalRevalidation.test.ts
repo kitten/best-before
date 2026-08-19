@@ -355,6 +355,53 @@ describe('conditional revalidation (opt-in)', () => {
     expect(store.urlCount).toBe(0);
   });
 
+  it('always validates a stored no-cache response and reuses its body on 304', async () => {
+    const store = new AgeAwareStore();
+    const cache = createHttpCache(store); // conditional revalidation is otherwise off
+    const seen: (string | null)[] = [];
+    const passthrough = vi.fn(async (req: Request) => {
+      const validator = req.headers.get('if-none-match');
+      seen.push(validator);
+      return validator
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : new Response('body1', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+    });
+
+    const first = await serve(cache.handle(new Request(url), passthrough));
+    expect(await first.text()).toBe('body1');
+    expect(store.urlCount).toBe(1);
+
+    const validated = await serve(cache.handle(new Request(url), passthrough));
+    expect(validated.status).toBe(200);
+    expect(await validated.text()).toBe('body1');
+    expect(validated.cacheStatus.decision).toBe(CacheDecision.HIT);
+    expect(seen).toEqual([null, '"v1"']);
+    expect(store.urlCount).toBe(1);
+  });
+
+  it('returns 304 for a matching client conditional after validating no-cache', async () => {
+    const store = new MemoryStore();
+    const cache = createHttpCache(store);
+    const passthrough = async (req: Request) =>
+      req.headers.get('if-none-match')
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : new Response('body1', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+
+    await serve(cache.handle(new Request(url), passthrough));
+    const validated = await serve(
+      cache.handle(
+        new Request(url, { headers: { 'if-none-match': '"v1"' } }),
+        passthrough
+      )
+    );
+    expect(validated.status).toBe(304);
+    expect(await validated.text()).toBe('');
+  });
+
   it('does not send validators when conditionalRevalidation is off (default)', async () => {
     const store = new MemoryStore();
     const cache = createHttpCache(store); // default: off
