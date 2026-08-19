@@ -27,6 +27,8 @@ export type ResolvedRange =
 
 const STRONG_ETAG_RE = /^"[\x21\x23-\x7e\x80-\xff]*"$/;
 
+const BYTE_RANGE_RE = /^(\d*)\s*-\s*(\d*)$/;
+
 function parseInteger(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;
   const number = Number(value);
@@ -34,9 +36,10 @@ function parseInteger(value: string): number | null {
 }
 
 function parseRangeMember(memberValue: string): ByteRange | null {
-  const match = /^\s*(\d*)\s*-\s*(\d*)\s*$/.exec(memberValue);
-  if (!match || (!match[1] && !match[2])) return null;
-  const [, first, last] = match;
+  const match = BYTE_RANGE_RE.exec(memberValue.trim());
+  if (match == null) return null;
+  const first = match[1];
+  const last = match[2];
   if (!first) {
     const length = parseInteger(last);
     return length == null ? null : { type: 'suffix', length };

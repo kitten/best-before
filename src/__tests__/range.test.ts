@@ -60,6 +60,31 @@ describe('byte Range parsing and resolution', () => {
     ).toBe('unsupported');
   });
 
+  it('parses whitespace-heavy members in linear time', () => {
+    // A pattern with a leading `\s*` overlapping the `\s*` before the dash backtracks
+    // quadratically here, and one 8 KiB header then costs tens of milliseconds of CPU.
+    const padding = MAX_RANGE_HEADER_LENGTH - 'bytes='.length - 8;
+    const values = [
+      `bytes=${' '.repeat(padding)}`,
+      `bytes=${'\t'.repeat(padding)}`,
+      `bytes=${' '.repeat(padding - 2)}-${' '.repeat(2)}x`,
+    ];
+    const started = performance.now();
+    for (let index = 0; index < 50; index++)
+      for (const value of values)
+        expect(parseRangeHeader(value).type).toBe('malformed');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('ignores OWS around the dash and the member', () => {
+    expect(parseRangeHeader('bytes= 0 - 4 ')).toEqual({
+      type: 'single',
+      range: { type: 'bounded', start: 0, end: 4 },
+    });
+    for (const value of ['bytes= 0 4 ', 'bytes=0 1-2', 'bytes=1-2 3'])
+      expect(parseRangeHeader(value).type).toBe('malformed');
+  });
+
   it('resolves clamped, open, suffix, zero suffix, and empty representations', () => {
     expect(
       resolveByteRange({ type: 'bounded', start: 0, end: 99 }, 10)
