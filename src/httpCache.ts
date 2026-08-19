@@ -211,11 +211,12 @@ export function createHttpCache(
     const storedPolicy = staleResponse.headers.get(INTERNAL_CACHE_CONTROL);
     const freshened = freshenStoredResponse(staleResponse, notModified);
     let policySource: ResponseLike = freshened;
-    if (storedPolicy && !hasResponseCachePolicy(request, notModified)) {
+    const hasUpdatedPolicy = hasResponseCachePolicy(request, notModified);
+    if (storedPolicy && !hasUpdatedPolicy) {
       const headers = new Headers(freshened.headers);
       headers.set(PUBLIC_CACHE_CONTROL, storedPolicy);
       policySource = { status: freshened.status, headers };
-    } else if (storedPolicy && hasResponseCachePolicy(request, notModified)) {
+    } else if (storedPolicy && hasUpdatedPolicy) {
       const stored = parseCacheControl(storedPolicy);
       const updated = getResponseCacheControl(request, notModified);
       if (updated && stored.public && !updated.noStore && !updated.private) {
@@ -279,7 +280,6 @@ export function createHttpCache(
     request: Request,
     cacheResponse: Response | undefined,
     decision: CacheDecision,
-    mustValidate: boolean,
     storable: boolean,
     passthrough: Passthrough,
     ctx: ExecutionCtx | undefined
@@ -290,6 +290,10 @@ export function createHttpCache(
     const hasStoredValidator =
       cacheResponse?.headers.has('etag') ||
       cacheResponse?.headers.has('last-modified');
+    const mustValidate = cacheResponse
+      ? parseCacheControl(cacheResponse.headers.get(INTERNAL_CACHE_CONTROL))
+          .noCache
+      : false;
     const validateWith =
       cacheResponse &&
       hasStoredValidator &&
@@ -416,32 +420,21 @@ export function createHttpCache(
 
     let decision: CacheDecision = CacheDecision.BYPASS;
     let cacheResponse: Response | undefined;
-    let mustValidate = false;
 
     if (cacheRequest) {
-      const decide = (
-        response: Response | undefined
-      ): { decision: CacheDecision; mustValidate: boolean } => {
+      const decide = (response: Response | undefined): CacheDecision => {
         if (!response) {
-          return {
-            decision: onlyIfCached
-              ? CacheDecision.MISS_TIMEOUT
-              : CacheDecision.MISS,
-            mustValidate: false,
-          };
+          return onlyIfCached ? CacheDecision.MISS_TIMEOUT : CacheDecision.MISS;
         }
         const storedPolicy = parseCacheControl(
           response.headers.get(INTERNAL_CACHE_CONTROL)
         );
-        return {
-          decision: computeCacheDecision(
-            client,
-            storedPolicy,
-            deriveAge(response.headers),
-            options
-          ),
-          mustValidate: storedPolicy.noCache,
-        };
+        return computeCacheDecision(
+          client,
+          storedPolicy,
+          deriveAge(response.headers),
+          options
+        );
       };
       let matchRequest = cacheRequest;
       const ifNoneMatch = request.headers.get('if-none-match');
@@ -461,7 +454,7 @@ export function createHttpCache(
         matchRequest = new Request(cacheRequest, { headers });
       }
       cacheResponse = await store.match(matchRequest, { ignoreMethod: true });
-      ({ decision, mustValidate } = decide(cacheResponse));
+      decision = decide(cacheResponse);
 
       // A stale or unverifiable native response cannot replace the complete stored response.
       const nativeResponseMatches =
@@ -475,7 +468,7 @@ export function createHttpCache(
         (decision !== CacheDecision.HIT || !nativeResponseMatches)
       ) {
         cacheResponse = await store.match(cacheRequest, { ignoreMethod: true });
-        ({ decision, mustValidate } = decide(cacheResponse));
+        decision = decide(cacheResponse);
       }
 
       if (decision === CacheDecision.MISS_TIMEOUT) {
@@ -513,7 +506,6 @@ export function createHttpCache(
               request,
               undefined,
               CacheDecision.MISS,
-              false,
               storable,
               passthrough,
               ctx
@@ -549,7 +541,6 @@ export function createHttpCache(
         request,
         cacheResponse,
         decision,
-        mustValidate,
         storable,
         passthrough,
         ctx
