@@ -1,4 +1,5 @@
 import {
+  CACHE_LOOKUP_IGNORED_HEADERS,
   CDN_CACHE_CONTROL_HEADERS,
   MAX_CACHEABLE_BODY_SIZE,
 } from './constants';
@@ -73,9 +74,10 @@ export async function getCacheRequest(
   for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
     headers.delete(headerName);
   }
-  // Range evaluation is owned by the cache over the selected complete representation.
-  headers.delete('range');
-  headers.delete('if-range');
+  // These semantics are evaluated over the complete representation by the library.
+  for (const headerName of CACHE_LOOKUP_IGNORED_HEADERS) {
+    headers.delete(headerName);
+  }
 
   return new Request(url, { headers, method: 'GET' });
 }

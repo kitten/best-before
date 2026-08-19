@@ -176,6 +176,24 @@ describe('computeStoreDecision', () => {
     ).toBe(null);
   });
 
+  it.each([
+    'Range',
+    'If-Range',
+    'If-None-Match',
+    'If-Modified-Since',
+    'Accept-Language, IF-NONE-MATCH',
+  ])('does not cache responses varying on normalized lookup field %s', vary => {
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': 's-maxage=3600', vary },
+        })
+      ).output
+    ).toBeNull();
+  });
+
   it('does not cache responses that set cookies', () => {
     expect(
       _computeStoreDecision(

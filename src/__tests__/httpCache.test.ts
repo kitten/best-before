@@ -103,6 +103,33 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
     expect(res.cacheStatus.decision).toBe(CacheDecision.HIT);
   });
 
+  it('does not let a conditional-aware store transform the selected representation', async () => {
+    const backing = new MemoryStore();
+    const store: CacheStore = {
+      async match(request, options) {
+        expect(request.headers.has('if-none-match')).toBe(false);
+        expect(request.headers.has('if-modified-since')).toBe(false);
+        return backing.match(request, options);
+      },
+      put: (request, response) => backing.put(request, response),
+      delete: (request, options) => backing.delete(request, options),
+    };
+    const cache = createHttpCache(store);
+    const passthrough = async () =>
+      new Response('body', {
+        headers: { 'cache-control': 's-maxage=3600', etag: '"v1"' },
+      });
+    await serve(cache.handle(new Request(url), passthrough));
+
+    const response = await serve(
+      cache.handle(
+        new Request(url, { headers: { 'if-none-match': '"v1"' } }),
+        passthrough
+      )
+    );
+    expect(response.status).toBe(304);
+  });
+
   it('serves the full body on a hit when the conditional does not match', async () => {
     const cache = makeCache();
     const passthrough = async () =>

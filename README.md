@@ -95,6 +95,8 @@ On a fresh cache hit, if the client's `If-None-Match` or `If-Modified-Since` alr
 
 However, origin revalidation defaults to re-fetching a full 200 response by stripping conditional headers. Set `conditionalRevalidation: true` to instead sent the stored entry's validator headers when revalidating a stale entry. On a 304, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
 
+`If-None-Match` and `If-Modified-Since` are removed from `CacheStore.match` requests so conditional-aware stores cannot replace the complete selected representation with a native `304`; the library evaluates them after freshness selection. Responses varying on either field are not stored.
+
 ### Range requests
 
 Single `bytes` ranges over eligible, complete cached `200` responses are served locally as `206`; valid unsatisfied ranges produce `416`. Bounded (`bytes=0-99`), open-ended (`bytes=100-`), and suffix (`bytes=-500`) forms are supported. Client preconditions are evaluated first, and `If-Range` uses strong validator semantics (unlike the weak ETag comparison used by `If-None-Match`).

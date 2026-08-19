@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createStreamingDigest } from '../cacheKey';
+import { createStreamingDigest, getCacheRequest } from '../cacheKey';
 
 function base64Url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -51,5 +51,29 @@ describe('createStreamingDigest', () => {
       digest.update(bytes);
       expect(await digest.digest()).toBe(await reference(bytes));
     }
+  });
+});
+
+describe('getCacheRequest', () => {
+  it('removes fields whose semantics are evaluated by the library', async () => {
+    const request = new Request('https://test.com/x', {
+      headers: {
+        range: 'bytes=0-1',
+        'if-range': '"v1"',
+        'if-none-match': '"v1"',
+        'if-modified-since': 'Tue, 01 Jul 2025 00:00:00 GMT',
+        'if-match': '"v0"',
+      },
+    });
+    const cacheRequest = await getCacheRequest(request, {
+      cacheNonGetMethods: false,
+    });
+    expect(cacheRequest).not.toBeNull();
+    expect(cacheRequest!.headers.has('range')).toBe(false);
+    expect(cacheRequest!.headers.has('if-range')).toBe(false);
+    expect(cacheRequest!.headers.has('if-none-match')).toBe(false);
+    expect(cacheRequest!.headers.has('if-modified-since')).toBe(false);
+    // Preconditions not evaluated by either the library or known stores remain available to Vary.
+    expect(cacheRequest!.headers.get('if-match')).toBe('"v0"');
   });
 });

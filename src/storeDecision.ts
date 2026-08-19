@@ -1,5 +1,6 @@
 import { makeDefaultCacheControl, parseCacheControl } from './cacheControl';
 import {
+  CACHE_LOOKUP_IGNORED_HEADERS,
   CDN_CACHE_CONTROL_HEADERS,
   CORS_MAX_AGE_HEADER,
   EXPIRES_HEADER,
@@ -106,8 +107,7 @@ export function computeStoreDecision(
       const normalized = name.trim().toLowerCase();
       return (
         normalized === '*' ||
-        normalized === 'range' ||
-        normalized === 'if-range'
+        CACHE_LOOKUP_IGNORED_HEADERS.some(name => name === normalized)
       );
     })
   ) {
