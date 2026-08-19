@@ -93,7 +93,7 @@ export function resolveByteRange(
   };
 }
 
-function strongIfRangeMatches(request: Request, response: Response): boolean {
+export function matchesIfRange(request: Request, response: Response): boolean {
   const value = request.headers.get('if-range');
   if (value == null) return true;
   const candidate = value.trim();
@@ -201,9 +201,13 @@ export function selectCachedResponse(
   if (rangeValue == null) return makeServeResponse(response, decision, head);
   const parsed = parseRangeHeader(rangeValue);
   if (parsed.type !== 'single') return undefined;
+  if (response.status === 206 && response.headers.has('content-range'))
+    return matchesIfRange(request, response)
+      ? makeServeResponse(response, decision)
+      : undefined;
   const length = representationLength(response);
   if (length == null) return undefined;
-  if (!strongIfRangeMatches(request, response))
+  if (!matchesIfRange(request, response))
     return makeServeResponse(response, decision);
   const resolved = resolveByteRange(parsed.range, length);
   const headers = buildServeHeaders(response);

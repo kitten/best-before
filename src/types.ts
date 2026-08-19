@@ -79,9 +79,10 @@ export interface StoreDecision {
  *
  * `delete` accepts an optional `ignoreVary` (used for RFC 9111 §4.4 invalidation) so every
  * stored variant of a URL can be removed at once; a store that only keys by URL may ignore it.
- * `match` need not implement Range or conditional semantics: the library removes the request
- * fields it evaluates itself and retrieves a complete response. For local slicing, the exposed
- * body bytes must match a valid `Content-Length` and the representation must be unencoded/identity.
+ * `match` may honor a single `Range` request or client conditional and return `206`/`304`; otherwise
+ * the library retrieves and transforms the complete response itself. Native transformed responses
+ * are verified by the library. For local slicing, the exposed body bytes must match a valid
+ * `Content-Length` and the representation must be unencoded/identity.
  */
 export interface CacheStore {
   match(

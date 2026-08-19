@@ -95,6 +95,32 @@ describe('cached Range responses', () => {
     return origin;
   };
 
+  it('does not treat Range on HEAD as a Range miss', async () => {
+    const cache = createHttpCache(new AgeAwareStore());
+    const origin = vi.fn(async (request: Request) => {
+      expect(request.method).toBe('GET');
+      expect(request.headers.has('range')).toBe(false);
+      expect(request.headers.has('if-range')).toBe(false);
+      expect(request.headers.has('if-none-match')).toBe(false);
+      return full();
+    });
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          method: 'HEAD',
+          headers: {
+            range: 'bytes=0-1',
+            'if-range': '"v1"',
+            'if-none-match': '"v1"',
+          },
+        }),
+        origin
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toBeNull();
+  });
+
   it('matches buffered slicing across source chunk boundaries', async () => {
     const encoded = new TextEncoder().encode(body);
     for (const chunkSize of [1, 2, 3, 4, 7, 10]) {
@@ -551,27 +577,129 @@ describe('cached Range responses', () => {
     expect(await response.text()).toBe('789');
   });
 
-  it('neutralizes a range-aware store by removing lookup Range headers', async () => {
-    const backing = new AgeAwareStore();
-    let lookupRange: string | null | undefined;
+  const makeRangeAwareStore = (backing: AgeAwareStore) => {
+    const lookups: Array<string | null> = [];
     const store: CacheStore = {
       async match(request) {
-        lookupRange = request.headers.get('range');
-        return backing.match(request);
+        const range = request.headers.get('range');
+        lookups.push(range);
+        const response = await backing.match(request);
+        if (!response || range !== 'bytes=3-4') return response;
+        const headers = new Headers(response.headers);
+        headers.delete('transfer-encoding');
+        headers.set('content-length', '2');
+        headers.set('content-range', 'bytes 3-4/10');
+        return new Response((await response.text()).slice(3, 5), {
+          status: 206,
+          headers,
+        });
       },
       put: (request, response) => backing.put(request, response),
       delete: request => backing.delete(request),
     };
+    return { store, lookups };
+  };
+
+  it('uses a fresh partial response produced by a range-aware store', async () => {
+    const backing = new AgeAwareStore();
+    const { store, lookups } = makeRangeAwareStore(backing);
     const cache = createHttpCache(store);
     const origin = await seed(cache);
+    lookups.length = 0;
     const response = await serve(
       cache.handle(
         new Request(url, { headers: { range: 'bytes=3-4' } }),
         origin
       )
     );
-    expect(lookupRange).toBeNull();
+    expect(lookups).toEqual(['bytes=3-4']);
+    expect(response.status).toBe(206);
     expect(await response.text()).toBe('34');
+    expect(origin).toHaveBeenCalledTimes(1);
+  });
+
+  it('evaluates client preconditions before serving a native slice', async () => {
+    const backing = new AgeAwareStore();
+    const { store, lookups } = makeRangeAwareStore(backing);
+    const cache = createHttpCache(store);
+    const origin = await seed(cache);
+    lookups.length = 0;
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: { range: 'bytes=3-4', 'if-none-match': 'W/"v1"' },
+        }),
+        origin
+      )
+    );
+    expect(lookups).toEqual(['bytes=3-4']);
+    expect(response.status).toBe(304);
+    expect(response.body).toBeNull();
+  });
+
+  it('re-reads a stale native slice as a complete response', async () => {
+    const backing = new AgeAwareStore();
+    const { store, lookups } = makeRangeAwareStore(backing);
+    const cache = createHttpCache(store);
+    await seed(
+      cache,
+      vi.fn(async () =>
+        full({ 'cache-control': 's-maxage=0, stale-if-error=100' })
+      )
+    );
+    lookups.length = 0;
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: {
+            range: 'bytes=3-4',
+            'cache-control': 'only-if-cached',
+          },
+        }),
+        vi.fn()
+      )
+    );
+    expect(lookups).toEqual(['bytes=3-4', null]);
+    expect(response.status).toBe(206);
+    expect(await response.text()).toBe('34');
+  });
+
+  it('uses a native slice when If-Range matches', async () => {
+    const backing = new AgeAwareStore();
+    const { store, lookups } = makeRangeAwareStore(backing);
+    const cache = createHttpCache(store);
+    const origin = await seed(cache);
+    lookups.length = 0;
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: { range: 'bytes=3-4', 'if-range': '"v1"' },
+        }),
+        origin
+      )
+    );
+    expect(lookups).toEqual(['bytes=3-4']);
+    expect(response.status).toBe(206);
+    expect(await response.text()).toBe('34');
+  });
+
+  it('re-reads the complete response when If-Range rejects a native slice', async () => {
+    const backing = new AgeAwareStore();
+    const { store, lookups } = makeRangeAwareStore(backing);
+    const cache = createHttpCache(store);
+    const origin = await seed(cache);
+    lookups.length = 0;
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: { range: 'bytes=3-4', 'if-range': '"other"' },
+        }),
+        origin
+      )
+    );
+    expect(lookups).toEqual(['bytes=3-4', null]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(body);
   });
 
   it('cancels after the selected end and errors on premature EOF', async () => {

@@ -103,13 +103,18 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
     expect(res.cacheStatus.decision).toBe(CacheDecision.HIT);
   });
 
-  it('does not let a conditional-aware store transform the selected representation', async () => {
+  it('uses a fresh native 304 from a conditional-aware store', async () => {
     const backing = new MemoryStore();
+    const lookups: Array<string | null> = [];
     const store: CacheStore = {
       async match(request, options) {
-        expect(request.headers.has('if-none-match')).toBe(false);
+        const ifNoneMatch = request.headers.get('if-none-match');
+        lookups.push(ifNoneMatch);
         expect(request.headers.has('if-modified-since')).toBe(false);
-        return backing.match(request, options);
+        const response = await backing.match(request, options);
+        return response && ifNoneMatch === '"v1"'
+          ? new Response(null, { status: 304, headers: response.headers })
+          : response;
       },
       put: (request, response) => backing.put(request, response),
       delete: (request, options) => backing.delete(request, options),
@@ -120,6 +125,7 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
         headers: { 'cache-control': 's-maxage=3600', etag: '"v1"' },
       });
     await serve(cache.handle(new Request(url), passthrough));
+    lookups.length = 0;
 
     const response = await serve(
       cache.handle(
@@ -127,7 +133,123 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
         passthrough
       )
     );
+    expect(lookups).toEqual(['"v1"']);
     expect(response.status).toBe(304);
+  });
+
+  it('uses a fresh native 304 for If-Modified-Since', async () => {
+    const backing = new MemoryStore();
+    const modified = 'Tue, 01 Jul 2025 00:00:00 GMT';
+    const lookups: Array<string | null> = [];
+    const store: CacheStore = {
+      async match(request, options) {
+        const ifModifiedSince = request.headers.get('if-modified-since');
+        lookups.push(ifModifiedSince);
+        const response = await backing.match(request, options);
+        return response && ifModifiedSince === modified
+          ? new Response(null, { status: 304, headers: response.headers })
+          : response;
+      },
+      put: (request, response) => backing.put(request, response),
+      delete: (request, options) => backing.delete(request, options),
+    };
+    const cache = createHttpCache(store);
+    const passthrough = async () =>
+      new Response('body', {
+        headers: {
+          'cache-control': 's-maxage=3600',
+          'last-modified': modified,
+        },
+      });
+    await serve(cache.handle(new Request(url), passthrough));
+    lookups.length = 0;
+
+    const response = await serve(
+      cache.handle(
+        new Request(url, { headers: { 'if-modified-since': modified } }),
+        passthrough
+      )
+    );
+    expect(lookups).toEqual([modified]);
+    expect(response.status).toBe(304);
+  });
+
+  it('re-reads a stale native 304 as a complete response', async () => {
+    const backing = new AgeAwareStore();
+    const lookups: Array<string | null> = [];
+    const store: CacheStore = {
+      async match(request) {
+        const ifNoneMatch = request.headers.get('if-none-match');
+        lookups.push(ifNoneMatch);
+        const response = await backing.match(request);
+        return response && ifNoneMatch === '"v1"'
+          ? new Response(null, { status: 304, headers: response.headers })
+          : response;
+      },
+      put: (request, response) => backing.put(request, response),
+      delete: request => backing.delete(request),
+    };
+    const cache = createHttpCache(store);
+    const passthrough = vi.fn(
+      async () =>
+        new Response('body', {
+          headers: {
+            'cache-control': 's-maxage=0, stale-if-error=100',
+            etag: '"v1"',
+          },
+        })
+    );
+    await serve(cache.handle(new Request(url), passthrough));
+    lookups.length = 0;
+
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: {
+            'if-none-match': '"v1"',
+            'cache-control': 'only-if-cached',
+          },
+        }),
+        passthrough
+      )
+    );
+    expect(lookups).toEqual(['"v1"', null]);
+    expect(response.status).toBe(304);
+    expect(passthrough).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a native 304 that does not match the client conditional', async () => {
+    const backing = new MemoryStore();
+    const lookups: Array<string | null> = [];
+    const store: CacheStore = {
+      async match(request, options) {
+        const ifNoneMatch = request.headers.get('if-none-match');
+        lookups.push(ifNoneMatch);
+        const response = await backing.match(request, options);
+        return response && ifNoneMatch
+          ? new Response(null, { status: 304, headers: response.headers })
+          : response;
+      },
+      put: (request, response) => backing.put(request, response),
+      delete: (request, options) => backing.delete(request, options),
+    };
+    const cache = createHttpCache(store);
+    const passthrough = async () =>
+      new Response('body', {
+        headers: { 'cache-control': 's-maxage=3600', etag: '"v1"' },
+      });
+    await serve(cache.handle(new Request(url), passthrough));
+    lookups.length = 0;
+
+    const response = await serve(
+      cache.handle(
+        new Request(url, { headers: { 'if-none-match': '"other"' } }),
+        passthrough
+      )
+    );
+    expect(lookups).toEqual(['"other"', null]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('body');
   });
 
   it('serves the full body on a hit when the conditional does not match', async () => {

@@ -25,7 +25,12 @@ import {
   deriveAge,
 } from './responses';
 import { INTERNAL_CACHE_CONTROL, PUBLIC_CACHE_CONTROL } from './constants';
-import { parseRangeHeader, selectCachedResponse as select } from './range';
+import { matchesClientConditional } from './conditional';
+import {
+  matchesIfRange,
+  parseRangeHeader,
+  selectCachedResponse as select,
+} from './range';
 
 function outcome(response: CacheResponse): CacheOutcome;
 function outcome(
@@ -77,7 +82,11 @@ function makeForwardedRequest(
   internalRevalidation = false
 ): Request {
   // A Range miss is an untouched passthrough: the origin must see every client precondition.
-  if (!internalRevalidation && request.headers.has('range'))
+  if (
+    !internalRevalidation &&
+    request.method === 'GET' &&
+    request.headers.has('range')
+  )
     return new Request(request);
   const headers = new Headers(request.headers);
   for (const headerName of CONDITIONAL_HEADERS) headers.delete(headerName);
@@ -92,6 +101,8 @@ function makeForwardedRequest(
     if (lastModified) headers.set('if-modified-since', lastModified);
   }
   if (request.method === 'HEAD') {
+    headers.delete('range');
+    headers.delete('if-range');
     return new Request(request, {
       method: 'GET',
       headers,
@@ -370,18 +381,50 @@ export function createHttpCache(
     let cacheResponse: Response | undefined;
 
     if (cacheRequest) {
-      cacheResponse = await store.match(cacheRequest, { ignoreMethod: true });
-      if (!cacheResponse) {
-        decision = onlyIfCached
-          ? CacheDecision.MISS_TIMEOUT
-          : CacheDecision.MISS;
-      } else {
-        decision = computeCacheDecision(
-          client,
-          parseCacheControl(cacheResponse.headers.get(INTERNAL_CACHE_CONTROL)),
-          deriveAge(cacheResponse.headers),
-          options
-        );
+      const decide = (response: Response | undefined) =>
+        response
+          ? computeCacheDecision(
+              client,
+              parseCacheControl(response.headers.get(INTERNAL_CACHE_CONTROL)),
+              deriveAge(response.headers),
+              options
+            )
+          : onlyIfCached
+            ? CacheDecision.MISS_TIMEOUT
+            : CacheDecision.MISS;
+      let matchRequest = cacheRequest;
+      const ifNoneMatch = request.headers.get('if-none-match');
+      const ifModifiedSince = request.headers.get('if-modified-since');
+      if (
+        rangeValue != null ||
+        ((request.method === 'GET' || head) &&
+          (ifNoneMatch != null || ifModifiedSince != null))
+      ) {
+        const headers = new Headers(cacheRequest.headers);
+        if (rangeValue != null) headers.set('range', rangeValue);
+        if (ifNoneMatch != null) {
+          headers.set('if-none-match', ifNoneMatch);
+        } else if (ifModifiedSince != null) {
+          headers.set('if-modified-since', ifModifiedSince);
+        }
+        matchRequest = new Request(cacheRequest, { headers });
+      }
+      cacheResponse = await store.match(matchRequest, { ignoreMethod: true });
+      decision = decide(cacheResponse);
+
+      // A stale or unverifiable native response cannot replace the complete stored response.
+      const nativeResponseMatches =
+        cacheResponse?.status === 206
+          ? matchesIfRange(request, cacheResponse)
+          : cacheResponse?.status === 304
+            ? matchesClientConditional(request, cacheResponse)
+            : true;
+      if (
+        (cacheResponse?.status === 206 || cacheResponse?.status === 304) &&
+        (decision !== CacheDecision.HIT || !nativeResponseMatches)
+      ) {
+        cacheResponse = await store.match(cacheRequest, { ignoreMethod: true });
+        decision = decide(cacheResponse);
       }
 
       if (decision === CacheDecision.MISS_TIMEOUT) {

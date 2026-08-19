@@ -95,7 +95,7 @@ On a fresh cache hit, if the client's `If-None-Match` or `If-Modified-Since` alr
 
 However, origin revalidation defaults to re-fetching a full 200 response by stripping conditional headers. Set `conditionalRevalidation: true` to instead send the stored entry's validator headers when revalidating a stale entry. On a 304, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
 
-`If-None-Match` and `If-Modified-Since` are removed from `CacheStore.match` requests so conditional-aware stores cannot replace the complete selected representation with a native `304`; the library evaluates them after freshness selection. Responses varying on either field are not stored.
+For GET and HEAD, the effective `If-None-Match` or `If-Modified-Since` may be passed to `CacheStore.match` so a fresh, verifiable native `304` can be used directly. A stale or unverifiable native `304` is looked up again without conditionals so the library retains the complete representation for freshness handling. Responses varying on either field are not stored.
 
 ### Range requests
 
@@ -103,7 +103,7 @@ Single `bytes` ranges over eligible, complete cached `200` responses are served 
 
 An eligible stored response must have a reliable nonnegative `Content-Length`, an available body containing exactly those representation bytes, and no `Content-Encoding` other than `identity`. Multiple or malformed ranges, unknown units, encoded/unknown-length representations, and range misses are forwarded unchanged. `206` responses are never stored. An honored `only-if-cached` request returns `504` when the range cannot be served locally.
 
-Stores retain complete responses and do not need native Range support. The library removes `Range` and `If-Range` from `CacheStore.match`, then slices the selected complete representation itself. Responses with `Vary: Range` or `Vary: If-Range` are consequently not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
+Stores retain complete responses. For a single range, the library lets `CacheStore.match` return a native `206`; otherwise it slices the selected complete representation itself. A stale native slice or one rejected by `If-Range` is looked up again without `Range` so revalidation, full-response fallback, and stale fallback retain the complete body. `If-Range` and ordinary conditional fields are always evaluated by the library rather than passed to the store. Responses with `Vary: Range` or `Vary: If-Range` are not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
 
 When adopting this lookup behavior over an existing persistent store, use a new cache namespace or purge old entries. Entries written by an earlier version could vary on fields that the current lookup intentionally removes.
 
