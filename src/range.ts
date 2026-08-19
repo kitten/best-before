@@ -169,6 +169,7 @@ function sliceBody(
           if (selected.byteLength > 0) {
             remaining -= selected.byteLength;
             controller.enqueue(selected);
+            if (remaining > 0 && (controller.desiredSize ?? 1) <= 0) return;
           }
         }
         // Cleanup failure cannot invalidate bytes that have already been selected.
@@ -201,10 +202,14 @@ export function selectCachedResponse(
   if (rangeValue == null) return makeServeResponse(response, decision, head);
   const parsed = parseRangeHeader(rangeValue);
   if (parsed.type !== 'single') return undefined;
-  if (response.status === 206 && response.headers.has('content-range'))
-    return matchesIfRange(request, response)
+  if (response.status === 206)
+    return response.headers.has('content-range') &&
+      matchesIfRange(request, response)
       ? makeServeResponse(response, decision)
       : undefined;
+  // Range only applies to a complete 200 representation. Other statuses ignore it.
+  if (response.status !== 200)
+    return makeServeResponse(response, decision, head);
   const length = representationLength(response);
   if (length == null) return undefined;
   if (!matchesIfRange(request, response))
@@ -212,14 +217,13 @@ export function selectCachedResponse(
   const resolved = resolveByteRange(parsed.range, length);
   const headers = buildServeHeaders(response);
   headers.delete('transfer-encoding');
-  headers.delete('content-range');
+  headers.set('accept-ranges', 'bytes');
   if (resolved.type === 'unsatisfied') {
     headers.delete('content-length');
     headers.set('content-range', `bytes */${length}`);
     return new CacheResponse(null, { status: 416, headers }, decision);
   }
   const selectedLength = resolved.end - resolved.start + 1;
-  headers.set('accept-ranges', 'bytes');
   headers.set(
     'content-range',
     `bytes ${resolved.start}-${resolved.end}/${length}`

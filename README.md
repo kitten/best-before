@@ -103,7 +103,7 @@ Single `bytes` ranges over eligible, complete cached `200` responses are served 
 
 An eligible stored response must have a reliable nonnegative `Content-Length`, an available body containing exactly those representation bytes, and no `Content-Encoding` other than `identity`. Multiple or malformed ranges, unknown units, encoded/unknown-length representations, and range misses are forwarded unchanged. `206` responses are never stored. An honored `only-if-cached` request returns `504` when the range cannot be served locally.
 
-Stores retain complete responses. For a single range, the library lets `CacheStore.match` return a native `206`; otherwise it slices the selected complete representation itself. A stale native slice or one rejected by `If-Range` is looked up again without `Range` so revalidation, full-response fallback, and stale fallback retain the complete body. `If-Range` and ordinary conditional fields are always evaluated by the library rather than passed to the store. Responses with `Vary: Range` or `Vary: If-Range` are not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
+Stores retain complete responses. For a single range, the library lets `CacheStore.match` return a native `206`; otherwise it slices the selected complete representation itself. A stale native slice or one rejected by `If-Range` is looked up again without `Range` so revalidation, full-response fallback, and stale fallback retain the complete body. `If-Range` is evaluated by the library and is not passed to the store. Responses with `Vary: Range` or `Vary: If-Range` are not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
 
 ### Pure decision engine
 

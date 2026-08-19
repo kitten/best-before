@@ -121,6 +121,27 @@ describe('cached Range responses', () => {
     expect(response.body).toBeNull();
   });
 
+  it.each([
+    [301, {}],
+    [404, { 'cache-control': 's-maxage=3600' }],
+  ])('serves a cached non-200 status %s unchanged', async (status, headers) => {
+    const cache = createHttpCache(new AgeAwareStore());
+    const origin = vi.fn(
+      async () => new Response('response', { status, headers })
+    );
+    await serve(cache.handle(new Request(url), origin));
+
+    const response = await serve(
+      cache.handle(
+        new Request(url, { headers: { range: 'bytes=0-4' } }),
+        origin
+      )
+    );
+    expect(response.status).toBe(status);
+    expect(await response.text()).toBe('response');
+    expect(origin).toHaveBeenCalledTimes(1);
+  });
+
   it('matches buffered slicing across source chunk boundaries', async () => {
     const encoded = new TextEncoder().encode(body);
     for (const chunkSize of [1, 2, 3, 4, 7, 10]) {
@@ -752,6 +773,31 @@ describe('cached Range responses', () => {
       )
     );
     await expect(truncated.text()).rejects.toThrow(/Content-Length/);
+  });
+
+  it('respects output backpressure while streaming a range', async () => {
+    let pulls = 0;
+    const chunk = new Uint8Array(1024);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(chunk);
+      },
+    });
+    const selected = selectCachedResponse(
+      new Request(url, { headers: { range: 'bytes=0-102399' } }),
+      new Response(stream, {
+        headers: {
+          'content-length': '102400',
+          'x-cache-internal-control': 's-maxage=3600, public',
+        },
+      }),
+      CacheDecision.HIT
+    )!;
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pulls).toBeLessThanOrEqual(2);
+    expect((await selected.arrayBuffer()).byteLength).toBe(102400);
   });
 
   it('does not fail selected bytes when source cancellation rejects', async () => {
