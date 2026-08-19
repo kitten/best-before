@@ -392,8 +392,20 @@ describe('storability rules', () => {
 
   it('does not store no-store responses', () =>
     expectNotStored(cc('no-store')));
-  it('does not store no-cache responses', () =>
-    expectNotStored(cc('no-cache')));
+  it('stores no-cache responses for mandatory validation', async () => {
+    const { cache, store, origin, req } = setup(
+      () =>
+        new Response('body', {
+          ...cc('public, no-cache'),
+          headers: { ...cc('public, no-cache').headers, etag: '"v1"' },
+        })
+    );
+    await serve(cache.handle(req(), origin));
+    expect(store.urlCount).toBe(1);
+    expect((await serve(cache.handle(req(), origin))).cacheStatus.hit).toBe(
+      false
+    );
+  });
   it('does not store responses with Set-Cookie', () =>
     expectNotStored({
       headers: { 'cache-control': 's-maxage=3600', 'set-cookie': 'a=1' },
@@ -810,6 +822,42 @@ describe('Vary variant selection', () => {
     const other = await serve(cache.handle(withEnc('br'), origin));
     expect(other.cacheStatus.hit).toBe(false);
     expect(await other.text()).toBe('enc=br#2');
+  });
+
+  it('validates no-cache Cookie variants without crossing representations', async () => {
+    const seen: Array<{ cookie: string | null; validator: string | null }> = [];
+    const { cache, origin } = setup(request => {
+      const cookie = request.headers.get('cookie');
+      const validator = request.headers.get('if-none-match');
+      seen.push({ cookie, validator });
+      const etag = `"${cookie}"`;
+      return validator === etag
+        ? new Response(null, { status: 304, headers: { etag } })
+        : new Response(`body for ${cookie}`, {
+            headers: {
+              'cache-control': 'public, no-cache',
+              etag,
+              vary: 'Cookie',
+            },
+          });
+    });
+    const withCookie = (cookie: string) =>
+      new Request(url, { headers: { cookie } });
+
+    await serve(cache.handle(withCookie('alice'), origin));
+    await serve(cache.handle(withCookie('bob'), origin));
+    expect(
+      await (await serve(cache.handle(withCookie('alice'), origin))).text()
+    ).toBe('body for alice');
+    expect(
+      await (await serve(cache.handle(withCookie('bob'), origin))).text()
+    ).toBe('body for bob');
+    expect(seen).toEqual([
+      { cookie: 'alice', validator: null },
+      { cookie: 'bob', validator: null },
+      { cookie: 'alice', validator: '"alice"' },
+      { cookie: 'bob', validator: '"bob"' },
+    ]);
   });
 
   it('varies a stored OPTIONS preflight on the CORS request headers', async () => {

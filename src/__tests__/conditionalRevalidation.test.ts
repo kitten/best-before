@@ -4,6 +4,7 @@ import { freshenStoredResponse } from '../responses';
 import { AgeAwareStore, Clock, serve } from './cacheHarness';
 
 class MemoryStore implements CacheStore {
+  puts = 0;
   private map = new Map<
     string,
     {
@@ -23,6 +24,7 @@ class MemoryStore implements CacheStore {
     });
   }
   async put(request: Request, response: Response): Promise<void> {
+    this.puts++;
     const body = await response.arrayBuffer();
     this.map.set(request.url, {
       body,
@@ -353,6 +355,249 @@ describe('conditional revalidation (opt-in)', () => {
       )
     );
     expect(store.urlCount).toBe(0);
+  });
+
+  it('keeps the stored lifetime when the 304 carries only Expires', async () => {
+    const clock = new Clock();
+    const store = new AgeAwareStore(clock);
+    const cache = createHttpCache(store, { conditionalRevalidation: true });
+    const passthrough = vi.fn(async (req: Request) =>
+      req.headers.get('if-none-match')
+        ? new Response(null, {
+            status: 304,
+            headers: {
+              expires: new Date(Date.now() + 60_000).toUTCString(),
+              etag: '"v1"',
+            },
+          })
+        : new Response('body1', {
+            headers: {
+              'cache-control':
+                'public, max-age=3600, stale-while-revalidate=600',
+              etag: '"v1"',
+            },
+          })
+    );
+
+    await serve(cache.handle(new Request(url), passthrough));
+    await serve(
+      cache.handle(
+        new Request(url, { headers: { 'cache-control': 'no-cache' } }),
+        passthrough
+      )
+    );
+
+    clock.advance(120);
+    const hit = await serve(cache.handle(new Request(url), passthrough));
+    expect(hit.cacheStatus.decision).toBe(CacheDecision.HIT);
+    expect(await hit.text()).toBe('body1');
+    expect(passthrough).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not promote a bare max-age on a 304 to shared-cacheable', async () => {
+    const clock = new Clock();
+    const store = new AgeAwareStore(clock);
+    const cache = createHttpCache(store, { conditionalRevalidation: true });
+    const passthrough = vi.fn(async (req: Request) =>
+      req.headers.get('if-none-match')
+        ? new Response(null, {
+            status: 304,
+            headers: { 'cache-control': 'max-age=3600', etag: '"v1"' },
+          })
+        : new Response('body1', {
+            headers: { 'cache-control': 's-maxage=1', etag: '"v1"' },
+          })
+    );
+
+    await serve(cache.handle(new Request(url), passthrough));
+    clock.advance(5);
+    await serve(cache.handle(new Request(url), passthrough));
+    expect(store.urlCount).toBe(0);
+
+    await serve(cache.handle(new Request(url), passthrough));
+    expect(passthrough).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not freshen a stale-while-revalidate entry on an unsolicited 304', async () => {
+    const clock = new Clock();
+    const store = new AgeAwareStore(clock);
+    const cache = createHttpCache(store, { conditionalRevalidation: true });
+    const conditionals: (string | null)[] = [];
+    let calls = 0;
+    const passthrough = vi.fn(async (req: Request) => {
+      conditionals.push(req.headers.get('if-none-match'));
+      return ++calls === 1
+        ? new Response('body1', {
+            headers: {
+              'cache-control': 'public, max-age=5, stale-while-revalidate=600',
+            },
+          })
+        : new Response(null, { status: 304 });
+    });
+
+    await serve(cache.handle(new Request(url), passthrough));
+    clock.advance(10);
+    const stale = await serve(cache.handle(new Request(url), passthrough));
+    expect(stale.cacheStatus.decision).toBe(
+      CacheDecision.STALE_WHILE_REVALIDATE
+    );
+    expect(conditionals).toEqual([null, null]);
+
+    const again = await serve(cache.handle(new Request(url), passthrough));
+    expect(again.cacheStatus.decision).toBe(
+      CacheDecision.STALE_WHILE_REVALIDATE
+    );
+  });
+
+  it('always validates a stored no-cache response and reuses its body on 304', async () => {
+    const store = new AgeAwareStore();
+    const cache = createHttpCache(store); // conditional revalidation is otherwise off
+    const seen: (string | null)[] = [];
+    const passthrough = vi.fn(async (req: Request) => {
+      const validator = req.headers.get('if-none-match');
+      seen.push(validator);
+      return validator
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : new Response('body1', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+    });
+
+    const first = await serve(cache.handle(new Request(url), passthrough));
+    expect(await first.text()).toBe('body1');
+    expect(store.urlCount).toBe(1);
+
+    const validated = await serve(cache.handle(new Request(url), passthrough));
+    expect(validated.status).toBe(200);
+    expect(await validated.text()).toBe('body1');
+    expect(validated.cacheStatus.decision).toBe(CacheDecision.HIT);
+    expect(seen).toEqual([null, '"v1"']);
+    expect(store.urlCount).toBe(1);
+  });
+
+  it('returns 504 for only-if-cached instead of validating a stored no-cache response', async () => {
+    const store = new AgeAwareStore();
+    const cache = createHttpCache(store);
+    const origin = vi.fn(
+      async () =>
+        new Response('body', {
+          headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+        })
+    );
+
+    await serve(cache.handle(new Request(url), origin));
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: { 'cache-control': 'only-if-cached' },
+        }),
+        origin
+      )
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toBe('');
+    expect(origin).toHaveBeenCalledOnce();
+  });
+
+  it('keeps shared eligibility when a 304 echoes bare no-cache', async () => {
+    const store = new MemoryStore();
+    const cache = createHttpCache(store);
+    const seen: (string | null)[] = [];
+    const passthrough = async (req: Request) => {
+      const validator = req.headers.get('if-none-match');
+      seen.push(validator);
+      return validator
+        ? new Response(null, {
+            status: 304,
+            headers: { 'cache-control': 'no-cache', etag: '"v1"' },
+          })
+        : new Response('body', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+    };
+
+    await serve(cache.handle(new Request(url), passthrough));
+    await serve(cache.handle(new Request(url), passthrough));
+    await serve(cache.handle(new Request(url), passthrough));
+    expect(seen).toEqual([null, '"v1"', '"v1"']);
+    expect(store.puts).toBe(3);
+  });
+
+  it.each(['no-store', 'private'])(
+    'deletes an entry when a 304 demotes it with %s',
+    async policy => {
+      const store = new MemoryStore();
+      const cache = createHttpCache(store);
+      const passthrough = async (req: Request) =>
+        req.headers.has('if-none-match')
+          ? new Response(null, {
+              status: 304,
+              headers: { 'cache-control': policy },
+            })
+          : new Response('body', {
+              headers: {
+                'cache-control': 'public, no-cache',
+                etag: '"v1"',
+              },
+            });
+
+      await serve(cache.handle(new Request(url), passthrough));
+      await serve(cache.handle(new Request(url), passthrough));
+      expect(await store.match(new Request(url))).toBeUndefined();
+    }
+  );
+
+  it('does not freshen metadata after an unsolicited 304 without validators', async () => {
+    const store = new MemoryStore();
+    const storedDate = new Date(Date.now() - 60_000).toUTCString();
+    await store.put(
+      new Request(url),
+      new Response('legacy-body', {
+        headers: {
+          'cache-control': 'max-age=86400, public',
+          'x-cache-internal-control': 'public, no-cache',
+          date: storedDate,
+        },
+      })
+    );
+    const cache = createHttpCache(store);
+    let forwarded: Request | undefined;
+    const response = await serve(
+      cache.handle(new Request(url), async request => {
+        forwarded = request;
+        return new Response(null, { status: 304 });
+      })
+    );
+
+    expect(forwarded?.headers.has('if-none-match')).toBe(false);
+    expect(forwarded?.headers.has('if-modified-since')).toBe(false);
+    expect(await response.text()).toBe('legacy-body');
+    expect(store.puts).toBe(1);
+    expect((await store.match(new Request(url)))?.headers.get('date')).toBe(
+      storedDate
+    );
+  });
+
+  it('returns 304 for a matching client conditional after validating no-cache', async () => {
+    const store = new MemoryStore();
+    const cache = createHttpCache(store);
+    const passthrough = async (req: Request) =>
+      req.headers.get('if-none-match')
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : new Response('body1', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+
+    await serve(cache.handle(new Request(url), passthrough));
+    const validated = await serve(
+      cache.handle(
+        new Request(url, { headers: { 'if-none-match': '"v1"' } }),
+        passthrough
+      )
+    );
+    expect(validated.status).toBe(304);
+    expect(await validated.text()).toBe('');
   });
 
   it('does not send validators when conditionalRevalidation is off (default)', async () => {

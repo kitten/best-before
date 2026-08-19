@@ -1,11 +1,18 @@
-import { parseCacheControl } from './cacheControl';
+import {
+  cacheControlToResponseHeader,
+  parseCacheControl,
+} from './cacheControl';
 import {
   CacheDecision,
   computeCacheDecision,
   isErrorResponse,
   isRequestCacheable,
 } from './cacheDecision';
-import { computeStoreDecision, hasResponseCachePolicy } from './storeDecision';
+import {
+  computeStoreDecision,
+  getResponseCacheControl,
+  hasResponseCachePolicy,
+} from './storeDecision';
 import type {
   CacheOutcome,
   CacheStore,
@@ -24,7 +31,11 @@ import {
   freshenStoredResponse,
   deriveAge,
 } from './responses';
-import { INTERNAL_CACHE_CONTROL, PUBLIC_CACHE_CONTROL } from './constants';
+import {
+  CDN_CACHE_CONTROL_HEADERS,
+  INTERNAL_CACHE_CONTROL,
+  PUBLIC_CACHE_CONTROL,
+} from './constants';
 import { matchesClientConditional } from './conditional';
 import {
   matchesIfRange,
@@ -75,6 +86,9 @@ const CONDITIONAL_HEADERS = [
   'if-unmodified-since',
   'if-modified-since',
 ] as const;
+
+const hasValidator = (response: Response): boolean =>
+  response.headers.has('etag') || response.headers.has('last-modified');
 
 function makeForwardedRequest(
   request: Request,
@@ -200,10 +214,27 @@ export function createHttpCache(
     const storedPolicy = staleResponse.headers.get(INTERNAL_CACHE_CONTROL);
     const freshened = freshenStoredResponse(staleResponse, notModified);
     let policySource: ResponseLike = freshened;
-    if (storedPolicy && !hasResponseCachePolicy(request, notModified)) {
+    const hasUpdatedPolicy = hasResponseCachePolicy(request, notModified);
+    if (storedPolicy && !hasUpdatedPolicy) {
       const headers = new Headers(freshened.headers);
       headers.set(PUBLIC_CACHE_CONTROL, storedPolicy);
       policySource = { status: freshened.status, headers };
+    } else if (storedPolicy) {
+      const merged = getResponseCacheControl(request, freshened);
+      if (
+        merged?.noCache &&
+        !merged.noStore &&
+        !merged.private &&
+        parseCacheControl(storedPolicy).public
+      ) {
+        merged.public = true;
+        const headers = new Headers(freshened.headers);
+        for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
+          headers.delete(headerName);
+        }
+        headers.set(PUBLIC_CACHE_CONTROL, cacheControlToResponseHeader(merged));
+        policySource = { status: freshened.status, headers };
+      }
     }
     const storeDecision = computeStoreDecision(request, policySource, options);
     const commit = () =>
@@ -258,7 +289,18 @@ export function createHttpCache(
     ctx: ExecutionCtx | undefined
   ): Promise<CacheResponse> {
     // Send the entry's validators so the origin may answer 304
-    const validateWith = conditionalRevalidation ? cacheResponse : undefined;
+    // Response `no-cache` requires successful validation before reuse, so its validators are
+    // mandatory even when conditional revalidation is otherwise disabled as an optimization.
+    const mustValidate = cacheResponse
+      ? parseCacheControl(cacheResponse.headers.get(INTERNAL_CACHE_CONTROL))
+          .noCache
+      : false;
+    const validateWith =
+      cacheResponse &&
+      hasValidator(cacheResponse) &&
+      (conditionalRevalidation || mustValidate)
+        ? cacheResponse
+        : undefined;
     const head = request.method === 'HEAD';
     try {
       const originResponse = await passthrough(
@@ -381,17 +423,20 @@ export function createHttpCache(
     let cacheResponse: Response | undefined;
 
     if (cacheRequest) {
-      const decide = (response: Response | undefined) =>
-        response
-          ? computeCacheDecision(
-              client,
-              parseCacheControl(response.headers.get(INTERNAL_CACHE_CONTROL)),
-              deriveAge(response.headers),
-              options
-            )
-          : onlyIfCached
-            ? CacheDecision.MISS_TIMEOUT
-            : CacheDecision.MISS;
+      const decide = (response: Response | undefined): CacheDecision => {
+        if (!response) {
+          return onlyIfCached ? CacheDecision.MISS_TIMEOUT : CacheDecision.MISS;
+        }
+        const storedPolicy = parseCacheControl(
+          response.headers.get(INTERNAL_CACHE_CONTROL)
+        );
+        return computeCacheDecision(
+          client,
+          storedPolicy,
+          deriveAge(response.headers),
+          options
+        );
+      };
       let matchRequest = cacheRequest;
       const ifNoneMatch = request.headers.get('if-none-match');
       const ifModifiedSince = request.headers.get('if-modified-since');
@@ -451,9 +496,10 @@ export function createHttpCache(
         decision === CacheDecision.STALE_WHILE_REVALIDATE
       ) {
         // Cloned before serving consumes the body, so the refresh can still read the stale entry.
-        const staleForRevalidate = conditionalRevalidation
-          ? cacheResponse.clone()
-          : undefined;
+        const staleForRevalidate =
+          conditionalRevalidation && hasValidator(cacheResponse)
+            ? cacheResponse.clone()
+            : undefined;
         const served = select(request, cacheResponse, decision, head);
         if (!served) {
           return outcome(undefined, () =>

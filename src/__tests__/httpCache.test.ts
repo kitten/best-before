@@ -72,6 +72,34 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
     expect(passthrough).toHaveBeenCalledTimes(1);
   });
 
+  it('conditionally validates a stored no-cache POST', async () => {
+    const cache = makeCache();
+    const seen: (string | null)[] = [];
+    const passthrough = vi.fn(async (request: Request) => {
+      const validator = request.headers.get('if-none-match');
+      seen.push(validator);
+      return validator
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : new Response('post response', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+    });
+    const post = () =>
+      new Request(url, {
+        method: 'POST',
+        body: 'request body',
+        headers: { 'content-length': '12' },
+      });
+
+    await serve(cache.handle(post(), passthrough));
+    const response = await serve(cache.handle(post(), passthrough));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('post response');
+    expect(response.cacheStatus.decision).toBe(CacheDecision.HIT);
+    expect(seen).toEqual([null, '"v1"']);
+  });
+
   it('restores the origin Cache-Control and strips internal bookkeeping headers on serve', async () => {
     const cache = makeCache();
     const passthrough = async () => new Response('body', cc('s-maxage=3600'));

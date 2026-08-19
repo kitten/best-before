@@ -1,4 +1,5 @@
 export const IMMUTABLE_MAX_AGE = 31536000;
+export const REVALIDATION_MAX_AGE = 86400;
 
 export const MAX_CACHEABLE_BODY_SIZE = 1e6; // 1MB
 

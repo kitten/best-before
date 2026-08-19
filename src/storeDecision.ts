@@ -6,6 +6,7 @@ import {
   EXPIRES_HEADER,
   IMMUTABLE_MAX_AGE,
   PUBLIC_CACHE_CONTROL,
+  REVALIDATION_MAX_AGE,
   SET_COOKIE_HEADER,
   VARY_HEADER,
 } from './constants';
@@ -28,6 +29,15 @@ function getResponseExpires(response: ResponseLike): number {
   return Math.max(Math.min(IMMUTABLE_MAX_AGE, delta), 0);
 }
 
+const getNoCacheRetentionAge = (
+  response: ResponseLike,
+  maxAge: number,
+  maxStale: number
+): number | null =>
+  response.headers.has('etag') || response.headers.has('last-modified')
+    ? Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE)
+    : null;
+
 /** Whether the response carries any caching-policy header */
 export function hasResponseCachePolicy(
   request: Request,
@@ -47,11 +57,6 @@ export function getResponseCacheControl(
 ): CacheControl | null {
   if (response.status === 504) {
     return null;
-  } else if (response.status === 301 || response.status === 308) {
-    // Permanent redirects are immutable
-    const result = makeDefaultCacheControl();
-    result.immutable = true;
-    return result;
   }
 
   let forcePublic = false;
@@ -68,6 +73,11 @@ export function getResponseCacheControl(
     // A CDN-specific caching header forces public
     parsed.public = parsed.public || forcePublic;
     return parsed;
+  } else if (response.status === 301 || response.status === 308) {
+    // Permanent redirects without an explicit policy are immutable by default.
+    const result = makeDefaultCacheControl();
+    result.immutable = true;
+    return result;
   } else if (request.method === 'OPTIONS') {
     const maxAge = getResponseCORSMaxAge(response);
     if (maxAge) {
@@ -124,11 +134,7 @@ export function computeStoreDecision(
   }
 
   // A shared cache must not store `private`; a private cache may.
-  if (
-    (shared && cacheControl.private) ||
-    cacheControl.noStore ||
-    cacheControl.noCache
-  ) {
+  if ((shared && cacheControl.private) || cacheControl.noStore) {
     return null;
   }
 
@@ -182,6 +188,23 @@ export function computeStoreDecision(
 
     decision.noTransform = cacheControl.noTransform;
 
+    if (cacheControl.noCache) {
+      const hasSharedSignal =
+        cacheControl.public ||
+        cacheControl.serverMaxAge !== null ||
+        cacheControl.mustRevalidate ||
+        cacheControl.proxyRevalidate;
+      const retention =
+        isPublic && hasSharedSignal
+          ? getNoCacheRetentionAge(response, maxAge, maxStale)
+          : null;
+      if (retention === null) {
+        return null;
+      }
+      maxAge = retention;
+      maxStale = 0;
+    }
+
     if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
       return null;
     }
@@ -226,6 +249,15 @@ export function computeStoreDecision(
   }
 
   decision.noTransform = cacheControl.noTransform;
+
+  if (cacheControl.noCache) {
+    const retention = getNoCacheRetentionAge(response, maxAge, maxStale);
+    if (retention === null) {
+      return null;
+    }
+    maxAge = retention;
+    maxStale = 0;
+  }
 
   if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
     return null;
