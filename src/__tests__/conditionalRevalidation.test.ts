@@ -4,6 +4,7 @@ import { freshenStoredResponse } from '../responses';
 import { AgeAwareStore, Clock, serve } from './cacheHarness';
 
 class MemoryStore implements CacheStore {
+  puts = 0;
   private map = new Map<
     string,
     {
@@ -23,6 +24,7 @@ class MemoryStore implements CacheStore {
     });
   }
   async put(request: Request, response: Response): Promise<void> {
+    this.puts++;
     const body = await response.arrayBuffer();
     this.map.set(request.url, {
       body,
@@ -379,6 +381,85 @@ describe('conditional revalidation (opt-in)', () => {
     expect(validated.cacheStatus.decision).toBe(CacheDecision.HIT);
     expect(seen).toEqual([null, '"v1"']);
     expect(store.urlCount).toBe(1);
+  });
+
+  it('keeps shared eligibility when a 304 echoes bare no-cache', async () => {
+    const store = new MemoryStore();
+    const cache = createHttpCache(store);
+    const seen: (string | null)[] = [];
+    const passthrough = async (req: Request) => {
+      const validator = req.headers.get('if-none-match');
+      seen.push(validator);
+      return validator
+        ? new Response(null, {
+            status: 304,
+            headers: { 'cache-control': 'no-cache', etag: '"v1"' },
+          })
+        : new Response('body', {
+            headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+          });
+    };
+
+    await serve(cache.handle(new Request(url), passthrough));
+    await serve(cache.handle(new Request(url), passthrough));
+    await serve(cache.handle(new Request(url), passthrough));
+    expect(seen).toEqual([null, '"v1"', '"v1"']);
+    expect(store.puts).toBe(3);
+  });
+
+  it.each(['no-store', 'private'])(
+    'deletes an entry when a 304 demotes it with %s',
+    async policy => {
+      const store = new MemoryStore();
+      const cache = createHttpCache(store);
+      const passthrough = async (req: Request) =>
+        req.headers.has('if-none-match')
+          ? new Response(null, {
+              status: 304,
+              headers: { 'cache-control': policy },
+            })
+          : new Response('body', {
+              headers: {
+                'cache-control': 'public, no-cache',
+                etag: '"v1"',
+              },
+            });
+
+      await serve(cache.handle(new Request(url), passthrough));
+      await serve(cache.handle(new Request(url), passthrough));
+      expect(await store.match(new Request(url))).toBeUndefined();
+    }
+  );
+
+  it('does not freshen metadata after an unsolicited 304 without validators', async () => {
+    const store = new MemoryStore();
+    const storedDate = new Date(Date.now() - 60_000).toUTCString();
+    await store.put(
+      new Request(url),
+      new Response('legacy-body', {
+        headers: {
+          'cache-control': 'max-age=86400, public',
+          'x-cache-internal-control': 'public, no-cache',
+          date: storedDate,
+        },
+      })
+    );
+    const cache = createHttpCache(store);
+    let forwarded: Request | undefined;
+    const response = await serve(
+      cache.handle(new Request(url), async request => {
+        forwarded = request;
+        return new Response(null, { status: 304 });
+      })
+    );
+
+    expect(forwarded?.headers.has('if-none-match')).toBe(false);
+    expect(forwarded?.headers.has('if-modified-since')).toBe(false);
+    expect(await response.text()).toBe('legacy-body');
+    expect(store.puts).toBe(1);
+    expect((await store.match(new Request(url)))?.headers.get('date')).toBe(
+      storedDate
+    );
   });
 
   it('returns 304 for a matching client conditional after validating no-cache', async () => {

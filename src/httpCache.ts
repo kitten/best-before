@@ -1,11 +1,18 @@
-import { parseCacheControl } from './cacheControl';
+import {
+  cacheControlToResponseHeader,
+  parseCacheControl,
+} from './cacheControl';
 import {
   CacheDecision,
   computeCacheDecision,
   isErrorResponse,
   isRequestCacheable,
 } from './cacheDecision';
-import { computeStoreDecision, hasResponseCachePolicy } from './storeDecision';
+import {
+  computeStoreDecision,
+  getResponseCacheControl,
+  hasResponseCachePolicy,
+} from './storeDecision';
 import type {
   CacheOutcome,
   CacheStore,
@@ -24,7 +31,11 @@ import {
   freshenStoredResponse,
   deriveAge,
 } from './responses';
-import { INTERNAL_CACHE_CONTROL, PUBLIC_CACHE_CONTROL } from './constants';
+import {
+  CDN_CACHE_CONTROL_HEADERS,
+  INTERNAL_CACHE_CONTROL,
+  PUBLIC_CACHE_CONTROL,
+} from './constants';
 import { matchesClientConditional } from './conditional';
 import {
   matchesIfRange,
@@ -204,6 +215,21 @@ export function createHttpCache(
       const headers = new Headers(freshened.headers);
       headers.set(PUBLIC_CACHE_CONTROL, storedPolicy);
       policySource = { status: freshened.status, headers };
+    } else if (storedPolicy && hasResponseCachePolicy(request, notModified)) {
+      const stored = parseCacheControl(storedPolicy);
+      const updated = getResponseCacheControl(request, notModified);
+      if (updated && stored.public && !updated.noStore && !updated.private) {
+        updated.public = true;
+        const headers = new Headers(freshened.headers);
+        for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
+          headers.delete(headerName);
+        }
+        headers.set(
+          PUBLIC_CACHE_CONTROL,
+          cacheControlToResponseHeader(updated)
+        );
+        policySource = { status: freshened.status, headers };
+      }
     }
     const storeDecision = computeStoreDecision(request, policySource, options);
     const commit = () =>
@@ -261,8 +287,13 @@ export function createHttpCache(
     // Send the entry's validators so the origin may answer 304
     // Response `no-cache` requires successful validation before reuse, so its validators are
     // mandatory even when conditional revalidation is otherwise disabled as an optimization.
+    const hasStoredValidator =
+      cacheResponse?.headers.has('etag') ||
+      cacheResponse?.headers.has('last-modified');
     const validateWith =
-      cacheResponse && (conditionalRevalidation || mustValidate)
+      cacheResponse &&
+      hasStoredValidator &&
+      (conditionalRevalidation || mustValidate)
         ? cacheResponse
         : undefined;
     const head = request.method === 'HEAD';

@@ -32,6 +32,27 @@ describe('getResponseCacheControl', () => {
     ).toMatchObject({ public: false, immutable: true });
   });
 
+  it('honors explicit policies on permanent redirects', () => {
+    expect(
+      getResponseCacheControl(
+        new Request(url),
+        new Response(null, {
+          status: 301,
+          headers: { 'cache-control': 'no-store' },
+        })
+      )
+    ).toMatchObject({ noStore: true, immutable: false });
+    expect(
+      getResponseCacheControl(
+        new Request(url),
+        new Response(null, {
+          status: 308,
+          headers: { 'cache-control': 'max-age=60' },
+        })
+      )
+    ).toMatchObject({ maxAge: 60, immutable: false });
+  });
+
   it('parses Cache-Control from header', () => {
     expect(
       getResponseCacheControl(
@@ -239,7 +260,7 @@ describe('computeStoreDecision', () => {
         new Request(url),
         new Response(null, {
           status: 200,
-          headers: { 'cache-control': 'public, no-cache' },
+          headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
         })
       )
     ).toEqual({
@@ -256,21 +277,111 @@ describe('computeStoreDecision', () => {
         }),
         { requireSharedDirective: false }
       )
-    ).toEqual({
-      input: 'public, no-cache',
-      output: 's-maxage=86400, public, max-age=86400',
-    });
+    ).toEqual({ input: null, output: null });
 
     expect(
       _computeStoreDecision(
         new Request(url),
         new Response(null, {
           status: 200,
-          headers: { 'cache-control': 'no-cache' },
+          headers: { 'cache-control': 'no-cache', etag: '"v1"' },
         }),
         { shared: false }
       )
     ).toEqual({ input: 'no-cache', output: 'max-age=86400' });
+  });
+
+  it.each([
+    'public, no-cache',
+    'no-cache, s-maxage=0',
+    'no-cache, must-revalidate',
+  ])('retains validator-backed no-cache with shared signal: %s', policy => {
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          headers: { 'cache-control': policy, etag: '"v1"' },
+        })
+      ).output
+    ).toContain('s-maxage=86400');
+  });
+
+  it('requires a validator for no-cache retention', () => {
+    for (const shared of [true, false]) {
+      expect(
+        _computeStoreDecision(
+          new Request(url),
+          new Response(null, {
+            headers: { 'cache-control': 'public, no-cache' },
+          }),
+          { shared }
+        ).output
+      ).toBeNull();
+    }
+  });
+
+  it.each([
+    ['public, no-cache, max-age=5', 86400],
+    ['public, no-cache, stale-while-revalidate=60', 86400],
+    ['public, no-cache, max-age=172800', 172800],
+    ['public, no-cache, s-maxage=30', 86400],
+  ])('applies the no-cache retention floor to %s', (policy, lifetime) => {
+    const decision = computeStoreDecision(
+      new Request(url),
+      new Response(null, {
+        headers: { 'cache-control': policy, etag: '"v1"' },
+      }),
+      {}
+    );
+    expect(decision?.output.maxAge).toBe(lifetime);
+    expect(decision?.output.serverMaxAge).toBe(lifetime);
+  });
+
+  it.each([301, 308])('does not store a %s with no-store', status => {
+    expect(
+      _computeStoreDecision(
+        new Request(url),
+        new Response(null, {
+          status,
+          headers: { 'cache-control': 'no-store' },
+        })
+      ).output
+    ).toBeNull();
+  });
+
+  it('applies explicit redirect policies instead of the immutable default', () => {
+    const request = new Request(url);
+    const privateRedirect = new Response(null, {
+      status: 301,
+      headers: { 'cache-control': 'private, max-age=60' },
+    });
+    expect(_computeStoreDecision(request, privateRedirect).output).toBeNull();
+    expect(
+      _computeStoreDecision(request, privateRedirect, { shared: false }).output
+    ).toBe('max-age=60');
+
+    expect(
+      _computeStoreDecision(
+        request,
+        new Response(null, {
+          status: 301,
+          headers: {
+            'cache-control': 'public, no-cache',
+            etag: '"redirect-v1"',
+          },
+        })
+      ).output
+    ).toBe('s-maxage=86400, public, max-age=86400');
+
+    expect(
+      _computeStoreDecision(
+        request,
+        new Response(null, {
+          status: 301,
+          headers: { 'cache-control': 'public, max-age=60' },
+        })
+      ).output
+    ).toBe('s-maxage=60, public, max-age=60');
   });
 
   it('does not shared-cache bare no-cache for an authorized request', () => {

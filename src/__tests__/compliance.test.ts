@@ -394,7 +394,11 @@ describe('storability rules', () => {
     expectNotStored(cc('no-store')));
   it('stores no-cache responses for mandatory validation', async () => {
     const { cache, store, origin, req } = setup(
-      () => new Response('body', cc('public, no-cache'))
+      () =>
+        new Response('body', {
+          ...cc('public, no-cache'),
+          headers: { ...cc('public, no-cache').headers, etag: '"v1"' },
+        })
     );
     await serve(cache.handle(req(), origin));
     expect(store.urlCount).toBe(1);

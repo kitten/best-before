@@ -48,11 +48,6 @@ export function getResponseCacheControl(
 ): CacheControl | null {
   if (response.status === 504) {
     return null;
-  } else if (response.status === 301 || response.status === 308) {
-    // Permanent redirects are immutable
-    const result = makeDefaultCacheControl();
-    result.immutable = true;
-    return result;
   }
 
   let forcePublic = false;
@@ -69,6 +64,11 @@ export function getResponseCacheControl(
     // A CDN-specific caching header forces public
     parsed.public = parsed.public || forcePublic;
     return parsed;
+  } else if (response.status === 301 || response.status === 308) {
+    // Permanent redirects without an explicit policy are immutable by default.
+    const result = makeDefaultCacheControl();
+    result.immutable = true;
+    return result;
   } else if (request.method === 'OPTIONS') {
     const maxAge = getResponseCORSMaxAge(response);
     if (maxAge) {
@@ -143,6 +143,13 @@ export function computeStoreDecision(
       (options.requireSharedDirective === false || inherentlyShareable) &&
       !request.headers.has('Authorization') &&
       (request.method === 'GET' || request.method === 'HEAD');
+    const hasSharedSignal =
+      cacheControl.public ||
+      cacheControl.serverMaxAge !== null ||
+      cacheControl.mustRevalidate ||
+      cacheControl.proxyRevalidate ||
+      cacheControl.immutable ||
+      !response.headers.has(PUBLIC_CACHE_CONTROL);
 
     if (cacheControl.public) {
       isPublic = true;
@@ -179,7 +186,7 @@ export function computeStoreDecision(
 
     decision.noTransform = cacheControl.noTransform;
 
-    if (cacheControl.noCache && !isPublic) {
+    if (cacheControl.noCache && !hasSharedSignal) {
       return null;
     }
 
@@ -190,8 +197,15 @@ export function computeStoreDecision(
     // This is only the store-facing retention policy. The original `no-cache` policy is kept in
     // `input` and consulted on every lookup, while a positive lifetime lets Cache API-backed
     // stores retain a validator and representation for conditional revalidation.
-    if (cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
-      maxAge = REVALIDATION_MAX_AGE;
+    if (cacheControl.noCache) {
+      if (
+        !response.headers.has('etag') &&
+        !response.headers.has('last-modified')
+      ) {
+        return null;
+      }
+      maxAge = Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE);
+      maxStale = 0;
     }
 
     decision.public = isImmutable || isPublic;
@@ -239,8 +253,15 @@ export function computeStoreDecision(
     return null;
   }
 
-  if (cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
-    maxAge = REVALIDATION_MAX_AGE;
+  if (cacheControl.noCache) {
+    if (
+      !response.headers.has('etag') &&
+      !response.headers.has('last-modified')
+    ) {
+      return null;
+    }
+    maxAge = Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE);
+    maxStale = 0;
   }
 
   decision.maxAge = maxAge + maxStale;
