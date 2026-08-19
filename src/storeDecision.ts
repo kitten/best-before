@@ -29,6 +29,15 @@ function getResponseExpires(response: ResponseLike): number {
   return Math.max(Math.min(IMMUTABLE_MAX_AGE, delta), 0);
 }
 
+const getNoCacheRetentionAge = (
+  response: ResponseLike,
+  maxAge: number,
+  maxStale: number
+): number | null =>
+  response.headers.has('etag') || response.headers.has('last-modified')
+    ? Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE)
+    : null;
+
 /** Whether the response carries any caching-policy header */
 export function hasResponseCachePolicy(
   request: Request,
@@ -186,26 +195,19 @@ export function computeStoreDecision(
 
     decision.noTransform = cacheControl.noTransform;
 
-    if (cacheControl.noCache && !hasSharedSignal) {
-      return null;
-    }
-
-    if (!isImmutable && !cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
-      return null;
-    }
-
-    // This is only the store-facing retention policy. The original `no-cache` policy is kept in
-    // `input` and consulted on every lookup, while a positive lifetime lets Cache API-backed
-    // stores retain a validator and representation for conditional revalidation.
     if (cacheControl.noCache) {
-      if (
-        !response.headers.has('etag') &&
-        !response.headers.has('last-modified')
-      ) {
+      const retention = hasSharedSignal
+        ? getNoCacheRetentionAge(response, maxAge, maxStale)
+        : null;
+      if (retention === null) {
         return null;
       }
-      maxAge = Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE);
+      maxAge = retention;
       maxStale = 0;
+    }
+
+    if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
+      return null;
     }
 
     decision.public = isImmutable || isPublic;
@@ -249,19 +251,17 @@ export function computeStoreDecision(
 
   decision.noTransform = cacheControl.noTransform;
 
-  if (!isImmutable && !cacheControl.noCache && maxAge <= 0 && maxStale <= 0) {
-    return null;
-  }
-
   if (cacheControl.noCache) {
-    if (
-      !response.headers.has('etag') &&
-      !response.headers.has('last-modified')
-    ) {
+    const retention = getNoCacheRetentionAge(response, maxAge, maxStale);
+    if (retention === null) {
       return null;
     }
-    maxAge = Math.max(maxAge + maxStale, REVALIDATION_MAX_AGE);
+    maxAge = retention;
     maxStale = 0;
+  }
+
+  if (!isImmutable && maxAge <= 0 && maxStale <= 0) {
+    return null;
   }
 
   decision.maxAge = maxAge + maxStale;
