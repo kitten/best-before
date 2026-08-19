@@ -1,5 +1,12 @@
 # best-before
 
+## 0.2.1
+
+### Patch Changes
+
+- Add full `no-cache` directive's semantics for conditionals
+  Submitted by [@kitten](https://github.com/kitten) (See [#5](https://github.com/expo/best-before/pull/5))
+
 ## 0.2.0
 
 ### Minor Changes
