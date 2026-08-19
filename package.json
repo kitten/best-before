@@ -46,9 +46,9 @@
   },
   "keywords": [],
   "license": "MIT",
-  "repository": "https://github.com/kitten/best-before",
+  "repository": "https://github.com/expo/best-before",
   "bugs": {
-    "url": "https://github.com/kitten/best-before/issues"
+    "url": "https://github.com/expo/best-before/issues"
   },
   "devDependencies": {
     "@babel/plugin-transform-typescript": "^7.28.5",
