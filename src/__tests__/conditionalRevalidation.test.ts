@@ -383,6 +383,31 @@ describe('conditional revalidation (opt-in)', () => {
     expect(store.urlCount).toBe(1);
   });
 
+  it('returns 504 for only-if-cached instead of validating a stored no-cache response', async () => {
+    const store = new AgeAwareStore();
+    const cache = createHttpCache(store);
+    const origin = vi.fn(
+      async () =>
+        new Response('body', {
+          headers: { 'cache-control': 'public, no-cache', etag: '"v1"' },
+        })
+    );
+
+    await serve(cache.handle(new Request(url), origin));
+    const response = await serve(
+      cache.handle(
+        new Request(url, {
+          headers: { 'cache-control': 'only-if-cached' },
+        }),
+        origin
+      )
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toBe('');
+    expect(origin).toHaveBeenCalledOnce();
+  });
+
   it('keeps shared eligibility when a 304 echoes bare no-cache', async () => {
     const store = new MemoryStore();
     const cache = createHttpCache(store);

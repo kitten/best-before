@@ -524,6 +524,37 @@ describe('cached Range responses', () => {
     expect(await response.text()).toBe('234');
   });
 
+  it('validates a stored no-cache response before serving a range', async () => {
+    const cache = createHttpCache(new AgeAwareStore());
+    const seen: Array<{ range: string | null; validator: string | null }> = [];
+    const origin = vi.fn(async (request: Request) => {
+      const validator = request.headers.get('if-none-match');
+      seen.push({
+        range: request.headers.get('range'),
+        validator,
+      });
+      return validator
+        ? new Response(null, { status: 304, headers: { etag: '"v1"' } })
+        : full({ 'cache-control': 'public, no-cache' });
+    });
+
+    await serve(cache.handle(new Request(url), origin));
+    const response = await serve(
+      cache.handle(
+        new Request(url, { headers: { range: 'bytes=2-4' } }),
+        origin
+      )
+    );
+
+    expect(response.status).toBe(206);
+    expect(await response.text()).toBe('234');
+    expect(response.cacheStatus.decision).toBe(CacheDecision.HIT);
+    expect(seen).toEqual([
+      { range: null, validator: null },
+      { range: null, validator: '"v1"' },
+    ]);
+  });
+
   it('slices an eligible full replacement after revalidation', async () => {
     const cache = createHttpCache(new AgeAwareStore(), {
       conditionalRevalidation: true,
