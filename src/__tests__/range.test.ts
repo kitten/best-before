@@ -17,6 +17,7 @@ const full = (extra: HeadersInit = {}) =>
     headers: {
       'cache-control': 's-maxage=3600',
       'content-length': String(body.length),
+      'transfer-encoding': 'chunked',
       etag: '"v1"',
       ...extra,
     },
@@ -111,6 +112,7 @@ describe('cached Range responses', () => {
       String(expected.length)
     );
     expect(response.headers.get('accept-ranges')).toBe('bytes');
+    expect(response.headers.has('transfer-encoding')).toBe(false);
     expect(response.headers.get('etag')).toBe('"v1"');
     expect(response.cacheStatus.decision).toBe(CacheDecision.HIT);
     expect(origin).toHaveBeenCalledTimes(1);
@@ -128,6 +130,7 @@ describe('cached Range responses', () => {
     expect(response.status).toBe(416);
     expect(response.headers.get('content-range')).toBe('bytes */10');
     expect(response.headers.has('content-length')).toBe(false);
+    expect(response.headers.has('transfer-encoding')).toBe(false);
     expect(await response.text()).toBe('');
     expect(origin).toHaveBeenCalledTimes(1);
   });

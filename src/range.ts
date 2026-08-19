@@ -207,6 +207,7 @@ export function selectCachedResponse(
     return makeServeResponse(response, decision);
   const resolved = resolveByteRange(parsed.range, length);
   const headers = buildServeHeaders(response);
+  headers.delete('transfer-encoding');
   headers.delete('content-range');
   if (resolved.type === 'unsatisfied') {
     headers.delete('content-length');
