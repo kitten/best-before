@@ -1,4 +1,5 @@
 import {
+  CACHE_LOOKUP_IGNORED_HEADERS,
   CDN_CACHE_CONTROL_HEADERS,
   MAX_CACHEABLE_BODY_SIZE,
 } from './constants';
@@ -71,6 +72,10 @@ export async function getCacheRequest(
   // Cache-control headers are dropped so they don't vary the key
   const headers = new Headers(request.headers);
   for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
+    headers.delete(headerName);
+  }
+  // These semantics are evaluated over the complete representation by the library.
+  for (const headerName of CACHE_LOOKUP_IGNORED_HEADERS) {
     headers.delete(headerName);
   }
 

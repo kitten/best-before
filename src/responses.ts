@@ -85,7 +85,7 @@ export function makeStoreResponse(
   });
 }
 
-function buildServeHeaders(response: Response): Headers {
+export function buildServeHeaders(response: Response): Headers {
   const headers = new Headers(response.headers);
   const isStored = headers.has(INTERNAL_CACHE_CONTROL);
   headers.delete(INTERNAL_CACHE_CONTROL);

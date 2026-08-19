@@ -1,5 +1,6 @@
 import { makeDefaultCacheControl, parseCacheControl } from './cacheControl';
 import {
+  CACHE_LOOKUP_IGNORED_HEADERS,
   CDN_CACHE_CONTROL_HEADERS,
   CORS_MAX_AGE_HEADER,
   EXPIRES_HEADER,
@@ -101,7 +102,15 @@ export function computeStoreDecision(
 ): StoreDecision | null {
   if (response.status === 304 || response.status === 206) {
     return null;
-  } else if (response.headers.get(VARY_HEADER) === '*') {
+  } else if (
+    (response.headers.get(VARY_HEADER) || '').split(',').some(name => {
+      const normalized = name.trim().toLowerCase();
+      return (
+        normalized === '*' ||
+        (CACHE_LOOKUP_IGNORED_HEADERS as readonly string[]).includes(normalized)
+      );
+    })
+  ) {
     return null;
   } else if (response.headers.has(SET_COOKIE_HEADER)) {
     return null;

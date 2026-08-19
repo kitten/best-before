@@ -20,6 +20,7 @@ Standards referenced:
 - [RFC 9211](https://www.rfc-editor.org/rfc/rfc9211) (`Cache-Status`),
 - [RFC 9213](https://www.rfc-editor.org/rfc/rfc9213) (targeted `cdn-cache-control`),
 - [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861) (`stale-if-error`/`stale-while-revalidate`).
+- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) (byte ranges and conditional requests).
 
 The underlying implementation assumes that `Vary` can only be supported when `Cache#match` honours `Vary`.
 If the Web Cache store does not support `Vary`, related functionality and invalidation won't work as expected.
@@ -92,7 +93,17 @@ Isolating caches per user is your responsibility with `shared: false`, and user-
 
 On a fresh cache hit, if the client's `If-None-Match` or `If-Modified-Since` already match the stored entry, the library returns an empty `304 Not Modified` (weak ETag comparison, `*` and comma-lists, `If-None-Match` taking precedence over `If-Modified-Since`; GET/HEAD only)
 
-However, origin revalidation defaults to re-fetching a full 200 response by stripping conditional headers. Set `conditionalRevalidation: true` to instead sent the stored entry's validator headers when revalidating a stale entry. On a 304, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
+However, origin revalidation defaults to re-fetching a full 200 response by stripping conditional headers. Set `conditionalRevalidation: true` to instead send the stored entry's validator headers when revalidating a stale entry. On a 304, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
+
+For GET and HEAD, the effective `If-None-Match` or `If-Modified-Since` may be passed to `CacheStore.match` so a fresh, verifiable native `304` can be used directly. A stale or unverifiable native `304` is looked up again without conditionals so the library retains the complete representation for freshness handling. Responses varying on either field are not stored.
+
+### Range requests
+
+Single `bytes` ranges over eligible, complete cached `200` responses are served locally as `206`; valid unsatisfied ranges produce `416`. Bounded (`bytes=0-99`), open-ended (`bytes=100-`), and suffix (`bytes=-500`) forms are supported. Client preconditions are evaluated first, and `If-Range` uses strong validator semantics (unlike the weak ETag comparison used by `If-None-Match`).
+
+An eligible stored response must have a reliable nonnegative `Content-Length`, an available body containing exactly those representation bytes, and no `Content-Encoding` other than `identity`. Multiple or malformed ranges, unknown units, encoded/unknown-length representations, and range misses are forwarded unchanged. `206` responses are never stored. An honored `only-if-cached` request returns `504` when the range cannot be served locally.
+
+Stores retain complete responses. For a single range, the library lets `CacheStore.match` return a native `206`; otherwise it slices the selected complete representation itself. A stale native slice or one rejected by `If-Range` is looked up again without `Range` so revalidation, full-response fallback, and stale fallback retain the complete body. `If-Range` is evaluated by the library and is not passed to the store. Responses with `Vary: Range` or `Vary: If-Range` are not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
 
 ### Pure decision engine
 
@@ -206,6 +217,8 @@ Wrap the store to transform what's stored/read, instrument hits/puts, scope keys
 > **A from-scratch store must implement `Vary` matching.**
 > The library stores the `Vary` header and rejects `Vary: *`, but delegates secondary-key selection to `match`.
 > It does not compare varied request headers itself. If your `CacheStore` does not support `Vary`, it won't function.
+
+`match` does not need to implement Range semantics. For responses eligible for local byte slicing, it must expose the same complete representation bytes counted by `Content-Length`; runtimes that transparently decode bodies while retaining encoded headers are not eligible.
 
 ### `interface HttpCacheOptions`
 

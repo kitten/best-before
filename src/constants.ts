@@ -26,3 +26,11 @@ export const CORS_HEADERS = [
   'access-control-request-headers',
   'access-control-request-method',
 ] as const;
+
+/** Request fields evaluated by the library rather than by `CacheStore.match`. */
+export const CACHE_LOOKUP_IGNORED_HEADERS = [
+  'range',
+  'if-range',
+  'if-none-match',
+  'if-modified-since',
+] as const;
