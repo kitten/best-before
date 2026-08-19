@@ -148,36 +148,6 @@ describe('createHttpCache (EAS-style config: cacheNonGetMethods)', () => {
     expect(await res.text()).toBe('body');
   });
 
-  it('preserves client preconditions on a cache miss', async () => {
-    const cache = makeCache();
-    const passthrough = vi.fn(async (request: Request) => {
-      for (const headerName of [
-        'if-match',
-        'if-none-match',
-        'if-unmodified-since',
-        'if-modified-since',
-      ]) {
-        expect(request.headers.has(headerName)).toBe(true);
-      }
-      return new Response(null, { status: 304 });
-    });
-    const response = await serve(
-      cache.handle(
-        new Request(url, {
-          headers: {
-            'if-match': '"v1"',
-            'if-none-match': '"v2"',
-            'if-unmodified-since': 'Tue, 01 Jul 2025 00:00:00 GMT',
-            'if-modified-since': 'Tue, 01 Jul 2025 00:00:00 GMT',
-          },
-        }),
-        passthrough
-      )
-    );
-    expect(response.status).toBe(304);
-    expect(passthrough).toHaveBeenCalledOnce();
-  });
-
   it('returns an eager empty 504 for only-if-cached on an empty cache', async () => {
     const cache = makeCache();
     const passthrough = vi.fn(async () => new Response('origin'));

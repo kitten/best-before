@@ -76,12 +76,12 @@ function makeForwardedRequest(
   validateWith?: Response,
   internalRevalidation = false
 ): Request {
-  // A miss is an untouched passthrough: the origin must see every client precondition.
-  if (!internalRevalidation && request.method !== 'HEAD')
+  // A Range miss is an untouched passthrough: the origin must see every client precondition.
+  if (!internalRevalidation && request.headers.has('range'))
     return new Request(request);
   const headers = new Headers(request.headers);
+  for (const headerName of CONDITIONAL_HEADERS) headers.delete(headerName);
   if (internalRevalidation) {
-    for (const headerName of CONDITIONAL_HEADERS) headers.delete(headerName);
     headers.delete('range');
     headers.delete('if-range');
   }

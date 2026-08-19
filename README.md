@@ -93,7 +93,7 @@ Isolating caches per user is your responsibility with `shared: false`, and user-
 
 On a fresh cache hit, if the client's `If-None-Match` or `If-Modified-Since` already match the stored entry, the library returns an empty `304 Not Modified` (weak ETag comparison, `*` and comma-lists, `If-None-Match` taking precedence over `If-Modified-Since`; GET/HEAD only)
 
-Cache misses preserve client preconditions when forwarding to the origin. Revalidation of a selected stale entry defaults to re-fetching a full `200` by stripping those client headers. Set `conditionalRevalidation: true` to instead send the stored entry's validator headers. On a `304`, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
+However, origin revalidation defaults to re-fetching a full 200 response by stripping conditional headers. Set `conditionalRevalidation: true` to instead sent the stored entry's validator headers when revalidating a stale entry. On a 304, the retained body is re-served and re-stored with refreshed metadata. This is an efficiency optimization, not a correctness change, and is opt-in.
 
 `If-None-Match` and `If-Modified-Since` are removed from `CacheStore.match` requests so conditional-aware stores cannot replace the complete selected representation with a native `304`; the library evaluates them after freshness selection. Responses varying on either field are not stored.
 
@@ -183,7 +183,7 @@ The library never emits a `Cache-Status` header, but once can be derived by form
 
 The origin fetch the cache wraps. Called by `resolve()` (or a deferred `stale-while-revalidate` revalidation)
 with a request that may be rewritten
-(`HEAD` remapped to `GET`; client conditionals stripped during internal revalidation; the stored entry's validators added under `conditionalRevalidation`). Cache-miss passthroughs preserve client preconditions.
+(conditional headers stripped, `HEAD` remapped to `GET`, the stored entry's validators added under `conditionalRevalidation`).
 
 ### `interface ExecutionCtx`
 
