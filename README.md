@@ -105,6 +105,8 @@ An eligible stored response must have a reliable nonnegative `Content-Length`, a
 
 Stores retain complete responses and do not need native Range support. The library removes `Range` and `If-Range` from `CacheStore.match`, then slices the selected complete representation itself. Responses with `Vary: Range` or `Vary: If-Range` are consequently not stored. Multipart ranges, incomplete-response storage, and encoded-representation slicing are not supported.
 
+When adopting this lookup behavior over an existing persistent store, use a new cache namespace or purge old entries. Entries written by an earlier version could vary on fields that the current lookup intentionally removes.
+
 ### Pure decision engine
 
 The RFC 9111 decision logic is exported as standalone, pure-over-arguments functions, so you can build custom orchestration or use the library purely as a decision engine.
