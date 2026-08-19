@@ -5,6 +5,7 @@ import {
   MAX_RANGE_MEMBERS,
   parseRangeHeader,
   resolveByteRange,
+  selectCachedResponse,
 } from '../range';
 import { computeStoreDecision } from '../storeDecision';
 import { AgeAwareStore, Clock, TestExecutionCtx, serve } from './cacheHarness';
@@ -93,6 +94,36 @@ describe('cached Range responses', () => {
     await serve(cache.handle(new Request(url), origin));
     return origin;
   };
+
+  it('matches buffered slicing across source chunk boundaries', async () => {
+    const encoded = new TextEncoder().encode(body);
+    for (const chunkSize of [1, 2, 3, 4, 7, 10]) {
+      for (let start = 0; start < body.length; start++) {
+        for (let end = start; end < body.length; end++) {
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (let offset = 0; offset < encoded.length; offset += chunkSize)
+                controller.enqueue(encoded.slice(offset, offset + chunkSize));
+              controller.close();
+            },
+          });
+          const selected = selectCachedResponse(
+            new Request(url, {
+              headers: { range: `bytes=${start}-${end}` },
+            }),
+            new Response(stream, {
+              headers: {
+                'content-length': String(encoded.length),
+                'x-cache-internal-control': 's-maxage=3600, public',
+              },
+            }),
+            CacheDecision.HIT
+          );
+          expect(await selected!.text()).toBe(body.slice(start, end + 1));
+        }
+      }
+    }
+  });
 
   it.each([
     ['bytes=0-0', '0', 'bytes 0-0/10'],
