@@ -25,6 +25,8 @@ export type ResolvedRange =
   | { type: 'satisfied'; start: number; end: number }
   | { type: 'unsatisfied' };
 
+const STRONG_ETAG_RE = /^"[\x21\x23-\x7e\x80-\xff]*"$/;
+
 function parseInteger(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;
   const number = Number(value);
@@ -95,11 +97,11 @@ function strongIfRangeMatches(request: Request, response: Response): boolean {
   const value = request.headers.get('if-range');
   if (value == null) return true;
   const candidate = value.trim();
-  if (candidate.startsWith('W/')) return false;
-  if (candidate.startsWith('"')) {
+  if (STRONG_ETAG_RE.test(candidate)) {
     const etag = response.headers.get('etag')?.trim();
-    return !!etag && !etag.startsWith('W/') && etag === candidate;
+    return !!etag && STRONG_ETAG_RE.test(etag) && etag === candidate;
   }
+  if (candidate.startsWith('W/') || candidate.startsWith('"')) return false;
   const validatorDate = parseHttpDate(candidate);
   const lastModified = parseHttpDate(
     response.headers.get('last-modified') || ''
@@ -121,7 +123,13 @@ function parseHttpDate(value: string): number | null {
 }
 
 function representationLength(response: Response): number | null {
-  if (response.status !== 200 || response.body == null) return null;
+  if (
+    response.status !== 200 ||
+    response.body == null ||
+    response.headers.has('content-range')
+  ) {
+    return null;
+  }
   const raw = response.headers.get('content-length');
   if (raw == null || !/^\d+$/.test(raw.trim())) return null;
   const length = Number(raw);
@@ -163,7 +171,8 @@ function sliceBody(
             controller.enqueue(selected);
           }
         }
-        await reader.cancel();
+        // Cleanup failure cannot invalidate bytes that have already been selected.
+        await reader.cancel().catch(() => {});
         controller.close();
       } catch (error) {
         controller.error(error);

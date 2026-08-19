@@ -228,6 +228,7 @@ describe('cached Range responses', () => {
     ['"v1"', 206],
     ['W/"v1"', 200],
     ['"other"', 200],
+    ['"unterminated', 200],
     ['not a date', 200],
   ])('applies strong If-Range %s', async (ifRange, status) => {
     const cache = createHttpCache(new AgeAwareStore());
@@ -321,6 +322,7 @@ describe('cached Range responses', () => {
     [{ 'content-encoding': 'identity' }, true],
     [{ 'content-encoding': 'gzip' }, false],
     [{ 'content-length': '' }, false],
+    [{ 'content-range': 'bytes 0-9/10' }, false],
   ])('requires eligible body metadata %#', async (extra, eligible) => {
     const cache = createHttpCache(new AgeAwareStore());
     const origin = vi.fn(async () => full(extra));
@@ -588,6 +590,35 @@ describe('cached Range responses', () => {
       )
     );
     await expect(truncated.text()).rejects.toThrow(/Content-Length/);
+  });
+
+  it('does not fail selected bytes when source cancellation rejects', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+      },
+      cancel() {
+        throw new Error('cleanup failed');
+      },
+    });
+    const store: CacheStore = {
+      match: async () =>
+        new Response(stream, {
+          headers: {
+            'content-length': '10',
+            'x-cache-internal-control': 's-maxage=3600, public',
+          },
+        }),
+      put: async () => {},
+      delete: async () => false,
+    };
+    const response = await serve(
+      createHttpCache(store).handle(
+        new Request(url, { headers: { range: 'bytes=2-3' } }),
+        async () => full()
+      )
+    );
+    expect(await response.text()).toBe('23');
   });
 });
 
