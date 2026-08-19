@@ -87,6 +87,9 @@ const CONDITIONAL_HEADERS = [
   'if-modified-since',
 ] as const;
 
+const hasValidator = (response: Response): boolean =>
+  response.headers.has('etag') || response.headers.has('last-modified');
+
 function makeForwardedRequest(
   request: Request,
   validateWith?: Response,
@@ -216,19 +219,20 @@ export function createHttpCache(
       const headers = new Headers(freshened.headers);
       headers.set(PUBLIC_CACHE_CONTROL, storedPolicy);
       policySource = { status: freshened.status, headers };
-    } else if (storedPolicy && hasUpdatedPolicy) {
-      const stored = parseCacheControl(storedPolicy);
-      const updated = getResponseCacheControl(request, notModified);
-      if (updated && stored.public && !updated.noStore && !updated.private) {
-        updated.public = true;
+    } else if (storedPolicy) {
+      const merged = getResponseCacheControl(request, freshened);
+      if (
+        merged?.noCache &&
+        !merged.noStore &&
+        !merged.private &&
+        parseCacheControl(storedPolicy).public
+      ) {
+        merged.public = true;
         const headers = new Headers(freshened.headers);
         for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
           headers.delete(headerName);
         }
-        headers.set(
-          PUBLIC_CACHE_CONTROL,
-          cacheControlToResponseHeader(updated)
-        );
+        headers.set(PUBLIC_CACHE_CONTROL, cacheControlToResponseHeader(merged));
         policySource = { status: freshened.status, headers };
       }
     }
@@ -287,16 +291,13 @@ export function createHttpCache(
     // Send the entry's validators so the origin may answer 304
     // Response `no-cache` requires successful validation before reuse, so its validators are
     // mandatory even when conditional revalidation is otherwise disabled as an optimization.
-    const hasStoredValidator =
-      cacheResponse?.headers.has('etag') ||
-      cacheResponse?.headers.has('last-modified');
     const mustValidate = cacheResponse
       ? parseCacheControl(cacheResponse.headers.get(INTERNAL_CACHE_CONTROL))
           .noCache
       : false;
     const validateWith =
       cacheResponse &&
-      hasStoredValidator &&
+      hasValidator(cacheResponse) &&
       (conditionalRevalidation || mustValidate)
         ? cacheResponse
         : undefined;
@@ -495,9 +496,10 @@ export function createHttpCache(
         decision === CacheDecision.STALE_WHILE_REVALIDATE
       ) {
         // Cloned before serving consumes the body, so the refresh can still read the stale entry.
-        const staleForRevalidate = conditionalRevalidation
-          ? cacheResponse.clone()
-          : undefined;
+        const staleForRevalidate =
+          conditionalRevalidation && hasValidator(cacheResponse)
+            ? cacheResponse.clone()
+            : undefined;
         const served = select(request, cacheResponse, decision, head);
         if (!served) {
           return outcome(undefined, () =>

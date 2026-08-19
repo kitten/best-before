@@ -396,6 +396,48 @@ describe('computeStoreDecision', () => {
     ).toBe(null);
   });
 
+  it.each([
+    ['immutable, no-cache', 'immutable'],
+    ['no-cache, stale-if-error=600', 'stale-if-error=600'],
+  ])(
+    'does not let %s shared-cache an authorized request',
+    (directive, withoutNoCache) => {
+      const authorized = new Request(url, {
+        headers: { authorization: 'Bearer secret' },
+      });
+      const store = (value: string) =>
+        _computeStoreDecision(
+          authorized,
+          new Response(null, {
+            status: 200,
+            headers: { 'cache-control': value, etag: '"v1"' },
+          })
+        ).output;
+      // Adding `no-cache` to a refused policy must not make it storable
+      expect(store(withoutNoCache)).toBe(null);
+      expect(store(directive)).toBe(null);
+    }
+  );
+
+  it.each([
+    ['public, no-cache', 's-maxage=86400, public, max-age=86400'],
+    ['no-cache, s-maxage=0', 's-maxage=86400, public, max-age=86400'],
+    [
+      'no-cache, must-revalidate',
+      's-maxage=86400, must-revalidate, public, max-age=86400',
+    ],
+  ])('shared-caches %s for an authorized request', (directive, output) => {
+    expect(
+      _computeStoreDecision(
+        new Request(url, { headers: { authorization: 'Bearer secret' } }),
+        new Response(null, {
+          status: 200,
+          headers: { 'cache-control': directive, etag: '"v1"' },
+        })
+      ).output
+    ).toBe(output);
+  });
+
   it('overrides max-age for immutable output', () => {
     expect(
       _computeStoreDecision(

@@ -152,13 +152,6 @@ export function computeStoreDecision(
       (options.requireSharedDirective === false || inherentlyShareable) &&
       !request.headers.has('Authorization') &&
       (request.method === 'GET' || request.method === 'HEAD');
-    const hasSharedSignal =
-      cacheControl.public ||
-      cacheControl.serverMaxAge !== null ||
-      cacheControl.mustRevalidate ||
-      cacheControl.proxyRevalidate ||
-      cacheControl.immutable ||
-      !response.headers.has(PUBLIC_CACHE_CONTROL);
 
     if (cacheControl.public) {
       isPublic = true;
@@ -196,9 +189,15 @@ export function computeStoreDecision(
     decision.noTransform = cacheControl.noTransform;
 
     if (cacheControl.noCache) {
-      const retention = hasSharedSignal
-        ? getNoCacheRetentionAge(response, maxAge, maxStale)
-        : null;
+      const hasSharedSignal =
+        cacheControl.public ||
+        cacheControl.serverMaxAge !== null ||
+        cacheControl.mustRevalidate ||
+        cacheControl.proxyRevalidate;
+      const retention =
+        isPublic && hasSharedSignal
+          ? getNoCacheRetentionAge(response, maxAge, maxStale)
+          : null;
       if (retention === null) {
         return null;
       }
