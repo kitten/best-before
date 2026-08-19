@@ -1,6 +1,6 @@
 {
   "name": "best-before",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "RFC 9111 HTTP caching semantics layered on the Web Cache API",
   "author": "Phil Pluckthun <phil@kitten.sh>",
   "source": "./src/index.ts",

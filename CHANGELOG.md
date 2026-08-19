@@ -1,5 +1,12 @@
 # best-before
 
+## 0.2.0
+
+### Minor Changes
+
+- Implement suppot for range requests
+  Submitted by [@kitten](https://github.com/kitten) (See [#3](https://github.com/expo/best-before/pull/3))
+
 ## 0.1.1
 
 ### Patch Changes
