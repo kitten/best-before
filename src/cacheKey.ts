@@ -73,6 +73,9 @@ export async function getCacheRequest(
   for (const headerName of CDN_CACHE_CONTROL_HEADERS) {
     headers.delete(headerName);
   }
+  // Range evaluation is owned by the cache over the selected complete representation.
+  headers.delete('range');
+  headers.delete('if-range');
 
   return new Request(url, { headers, method: 'GET' });
 }

@@ -101,7 +101,16 @@ export function computeStoreDecision(
 ): StoreDecision | null {
   if (response.status === 304 || response.status === 206) {
     return null;
-  } else if (response.headers.get(VARY_HEADER) === '*') {
+  } else if (
+    (response.headers.get(VARY_HEADER) || '').split(',').some(name => {
+      const normalized = name.trim().toLowerCase();
+      return (
+        normalized === '*' ||
+        normalized === 'range' ||
+        normalized === 'if-range'
+      );
+    })
+  ) {
     return null;
   } else if (response.headers.has(SET_COOKIE_HEADER)) {
     return null;

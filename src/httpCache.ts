@@ -17,16 +17,15 @@ import type {
 } from './types';
 import { getCacheRequest } from './cacheKey';
 import { CacheResponse } from './cacheStatus';
-import { matchesClientConditional } from './conditional';
 import {
   makeServeResponse,
   makeStoreResponse,
   make504Response,
-  make304Response,
   freshenStoredResponse,
   deriveAge,
 } from './responses';
 import { INTERNAL_CACHE_CONTROL, PUBLIC_CACHE_CONTROL } from './constants';
+import { parseRangeHeader, selectCachedResponse as select } from './range';
 
 function outcome(response: CacheResponse): CacheOutcome;
 function outcome(
@@ -74,10 +73,18 @@ const CONDITIONAL_HEADERS = [
 
 function makeForwardedRequest(
   request: Request,
-  validateWith?: Response
+  validateWith?: Response,
+  internalRevalidation = false
 ): Request {
+  // A Range miss is an untouched passthrough: the origin must see every client precondition.
+  if (!internalRevalidation && request.headers.has('range'))
+    return new Request(request);
   const headers = new Headers(request.headers);
   for (const headerName of CONDITIONAL_HEADERS) headers.delete(headerName);
+  if (internalRevalidation) {
+    headers.delete('range');
+    headers.delete('if-range');
+  }
   if (validateWith) {
     const etag = validateWith.headers.get('etag');
     const lastModified = validateWith.headers.get('last-modified');
@@ -156,17 +163,21 @@ export function createHttpCache(
       originResponse,
       options
     );
-    return storeDecision
-      ? store.put(
-          cacheRequest,
-          makeStoreResponse(
-            request,
-            originResponse.clone(),
-            storeDecision.input,
-            storeDecision.output
-          )
-        )
-      : store.delete(cacheRequest);
+    if (!storeDecision) {
+      // A partial refresh must not evict the retained complete representation.
+      return originResponse.status === 206
+        ? Promise.resolve()
+        : store.delete(cacheRequest);
+    }
+    return store.put(
+      cacheRequest,
+      makeStoreResponse(
+        request,
+        originResponse.clone(),
+        storeDecision.input,
+        storeDecision.output
+      )
+    );
   }
 
   function freshen(
@@ -208,7 +219,7 @@ export function createHttpCache(
   ): Promise<void> {
     return settle(ctx, async () => {
       const originResponse = await passthrough(
-        makeForwardedRequest(request, staleResponse)
+        makeForwardedRequest(request, staleResponse, true)
       );
       if (staleResponse && originResponse.status === 304) {
         await freshen(
@@ -240,7 +251,7 @@ export function createHttpCache(
     const head = request.method === 'HEAD';
     try {
       const originResponse = await passthrough(
-        makeForwardedRequest(request, validateWith)
+        makeForwardedRequest(request, validateWith, !!cacheResponse)
       );
       await invalidateForUnsafe(request, originResponse, ctx);
 
@@ -253,23 +264,28 @@ export function createHttpCache(
         );
         if (storable) await settle(ctx, commit);
         // The freshened entry is served like a hit, so the client conditional applies to it too
-        const notModified =
-          (request.method === 'GET' || head) &&
-          matchesClientConditional(request, response);
-        return notModified
-          ? make304Response(response, CacheDecision.HIT)
-          : makeServeResponse(response, CacheDecision.HIT, head);
+        return (
+          select(request, response, CacheDecision.HIT, head) ||
+          makeServeResponse(response, CacheDecision.HIT, head)
+        );
       }
 
       if (!validateWith && originResponse.status === 304 && cacheResponse) {
         // Unsolicited 304 (no validators were sent): serve the stored entry, not a bare 304.
-        return makeServeResponse(cacheResponse, CacheDecision.HIT, head);
+        return (
+          select(request, cacheResponse, CacheDecision.HIT, head) ||
+          makeServeResponse(cacheResponse, CacheDecision.HIT, head)
+        );
       } else if (
         cacheResponse &&
         decision === CacheDecision.STALE_IF_ERROR &&
         isErrorResponse(originResponse)
       ) {
-        return makeServeResponse(cacheResponse, decision, head);
+        const selected = select(request, cacheResponse, decision, head);
+        return (
+          selected ||
+          makeServeResponse(originResponse, CacheDecision.MISS, head)
+        );
       } else if (cacheRequest && storable) {
         const storeDecision = computeStoreDecision(
           request,
@@ -296,10 +312,16 @@ export function createHttpCache(
         decision === CacheDecision.STALE_IF_ERROR
           ? CacheDecision.MISS
           : decision;
+      // Internal revalidation fetched a complete replacement; apply the client's Range now.
+      if (cacheResponse && originResponse.status === 200) {
+        const selected = select(request, originResponse, served, head);
+        if (selected) return selected;
+      }
       return makeServeResponse(originResponse, served, head);
     } catch (error) {
       if (cacheResponse && decision === CacheDecision.STALE_IF_ERROR) {
-        return makeServeResponse(cacheResponse, decision, head);
+        const selected = select(request, cacheResponse, decision, head);
+        if (selected) return selected;
       }
       throw error;
     }
@@ -310,6 +332,21 @@ export function createHttpCache(
     passthrough: Passthrough,
     ctx?: ExecutionCtx
   ): Promise<CacheOutcome> {
+    const rangeValue =
+      request.method === 'GET' ? request.headers.get('range') : null;
+    const rangeUnsupported =
+      rangeValue != null && parseRangeHeader(rangeValue).type !== 'single';
+    if (rangeUnsupported) {
+      const client = parseCacheControl(
+        request.headers.get(PUBLIC_CACHE_CONTROL)
+      );
+      if ((options.onlyIfCached ?? true) && client.onlyIfCached) {
+        return outcome(make504Response(CacheDecision.MISS_TIMEOUT));
+      }
+      return outcome(undefined, async () =>
+        makeServeResponse(await passthrough(request), CacheDecision.BYPASS)
+      );
+    }
     if (!isRequestCacheable(request)) {
       return outcome(undefined, async () => {
         const response = await passthrough(request);
@@ -350,14 +387,13 @@ export function createHttpCache(
       if (decision === CacheDecision.MISS_TIMEOUT) {
         return outcome(make504Response(decision));
       } else if (cacheResponse && decision === CacheDecision.HIT) {
-        const notModified =
-          (request.method === 'GET' || head) &&
-          matchesClientConditional(request, cacheResponse);
-        return outcome(
-          notModified
-            ? make304Response(cacheResponse, decision)
-            : makeServeResponse(cacheResponse, decision, head)
-        );
+        const selected = select(request, cacheResponse, decision, head);
+        if (selected) return outcome(selected);
+        if (onlyIfCached)
+          return outcome(make504Response(CacheDecision.MISS_TIMEOUT));
+        // The cached representation cannot safely be sliced. This is an untouched Range miss.
+        cacheResponse = undefined;
+        decision = CacheDecision.MISS;
       } else if (
         cacheResponse &&
         onlyIfCached &&
@@ -365,7 +401,8 @@ export function createHttpCache(
           decision === CacheDecision.STALE_IF_ERROR)
       ) {
         // `only-if-cached` forbids contacting the origin, so serve the stored entry as-is.
-        return outcome(makeServeResponse(cacheResponse, decision, head));
+        const selected = select(request, cacheResponse, decision, head);
+        return outcome(selected || make504Response(CacheDecision.MISS_TIMEOUT));
       } else if (
         cacheResponse &&
         decision === CacheDecision.STALE_WHILE_REVALIDATE
@@ -374,7 +411,20 @@ export function createHttpCache(
         const staleForRevalidate = conditionalRevalidation
           ? cacheResponse.clone()
           : undefined;
-        const served = makeServeResponse(cacheResponse, decision, head);
+        const served = select(request, cacheResponse, decision, head);
+        if (!served) {
+          return outcome(undefined, () =>
+            consultOrigin(
+              cacheRequest,
+              request,
+              undefined,
+              CacheDecision.MISS,
+              storable,
+              passthrough,
+              ctx
+            )
+          );
+        }
         // Deferred to first engagement, so an outcome discarded for another source skips the origin.
         let refresh: Promise<void> | undefined;
         const kickoff = () =>
